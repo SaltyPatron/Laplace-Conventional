@@ -59,10 +59,24 @@ class TokenShardDataset(IterableDataset):
             yield {"input_ids": torch.from_numpy(x), "labels": torch.from_numpy(y)}
 
 
-def _write_progress(path: Path, *, seen_tokens: int, batches_seen: int) -> None:
+def _write_progress(path: Path, *, seen_tokens: int, epoch: int, batch_in_epoch: int, batches_total: int) -> None:
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"seen_tokens": seen_tokens, "batches_seen": batches_seen}, sort_keys=True), encoding="utf-8")
+    tmp.write_text(json.dumps({
+        "seen_tokens": seen_tokens,
+        "epoch": epoch,
+        "batch_in_epoch": batch_in_epoch,
+        "batches_total": batches_total,
+    }, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _raw_loader(dataset: TokenShardDataset, micro_batch: int, workers: int) -> DataLoader:
+    return DataLoader(
+        dataset,
+        batch_size=micro_batch,
+        num_workers=workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
 
 def main() -> None:
@@ -91,7 +105,7 @@ def main() -> None:
     model.gradient_checkpointing_enable()
     pad_id = int(report["special_token_ids"]["pad"])
     dataset = TokenShardDataset(Path(args.data), "train", context, report["dtype"], pad_id)
-    loader = DataLoader(dataset, batch_size=micro_batch, num_workers=args.workers, pin_memory=torch.cuda.is_available())
+    loader = _raw_loader(dataset, micro_batch, args.workers)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg["learning_rate"]),
@@ -114,7 +128,9 @@ def main() -> None:
     model, optimizer, loader, scheduler = accelerator.prepare(model, optimizer, loader, scheduler)
 
     seen_tokens = 0
-    batches_seen = 0
+    epoch = 0
+    batch_in_epoch = 0
+    batches_total = 0
     if args.resume:
         resume = Path(args.resume)
         accelerator.load_state(resume)
@@ -123,20 +139,23 @@ def main() -> None:
             raise FileNotFoundError(f"resume checkpoint lacks {progress_path}")
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         seen_tokens = int(progress["seen_tokens"])
-        batches_seen = int(progress["batches_seen"])
-        loader = accelerator.skip_first_batches(loader, num_batches=batches_seen)
+        epoch = int(progress["epoch"])
+        batch_in_epoch = int(progress["batch_in_epoch"])
+        batches_total = int(progress.get("batches_total", batch_in_epoch))
+        loader = accelerator.skip_first_batches(loader, num_batches=batch_in_epoch)
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     checkpoint_tokens = int(train_cfg["checkpoint_tokens"])
     next_checkpoint = ((seen_tokens // checkpoint_tokens) + 1) * checkpoint_tokens
     optimizer.zero_grad(set_to_none=True)
-    epoch = 0
+
     while seen_tokens < total_tokens:
         made_progress = False
         for batch in loader:
             made_progress = True
-            batches_seen += 1
+            batch_in_epoch += 1
+            batches_total += 1
             with accelerator.accumulate(model):
                 result = model(**batch)
                 accelerator.backward(result.loss)
@@ -147,10 +166,11 @@ def main() -> None:
                 optimizer.zero_grad(set_to_none=True)
             valid_tokens = int((batch["labels"] != -100).sum().item()) * accelerator.num_processes
             seen_tokens += valid_tokens
-            if accelerator.is_main_process and batches_seen % 10 == 0:
+            if accelerator.is_main_process and batches_total % 10 == 0:
                 print(json.dumps({
-                    "batch": batches_seen,
+                    "batch": batches_total,
                     "epoch": epoch,
+                    "batch_in_epoch": batch_in_epoch,
                     "loss": float(result.loss.detach()),
                     "lr": scheduler.get_last_lr()[0],
                     "seen_tokens": seen_tokens,
@@ -160,25 +180,35 @@ def main() -> None:
                 checkpoint = out / f"tokens-{seen_tokens:015d}"
                 accelerator.save_state(checkpoint)
                 if accelerator.is_main_process:
-                    _write_progress(checkpoint / "progress.json", seen_tokens=seen_tokens, batches_seen=batches_seen)
+                    _write_progress(
+                        checkpoint / "progress.json",
+                        seen_tokens=seen_tokens,
+                        epoch=epoch,
+                        batch_in_epoch=batch_in_epoch,
+                        batches_total=batches_total,
+                    )
                 next_checkpoint += checkpoint_tokens
             if seen_tokens >= total_tokens and accelerator.sync_gradients:
                 break
         if not made_progress:
             raise RuntimeError("training dataset produced no batches")
+        if seen_tokens >= total_tokens:
+            break
         epoch += 1
-        loader = accelerator.prepare(DataLoader(
-            dataset,
-            batch_size=micro_batch,
-            num_workers=args.workers,
-            pin_memory=torch.cuda.is_available(),
-        ))
+        batch_in_epoch = 0
+        loader = accelerator.prepare(_raw_loader(dataset, micro_batch, args.workers))
 
     accelerator.wait_for_everyone()
     final_state = out / "final-state"
     accelerator.save_state(final_state)
     if accelerator.is_main_process:
-        _write_progress(final_state / "progress.json", seen_tokens=seen_tokens, batches_seen=batches_seen)
+        _write_progress(
+            final_state / "progress.json",
+            seen_tokens=seen_tokens,
+            epoch=epoch,
+            batch_in_epoch=batch_in_epoch,
+            batches_total=batches_total,
+        )
         final_model = out / "final-model"
         final_model.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
