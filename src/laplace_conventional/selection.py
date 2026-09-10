@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .corpus import ManifestEntry, write_manifest
-from .providers import TEXT, provider_for
+from .providers import AUDIO, TEXT, VIDEO, provider_for
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,7 @@ def apply_selection(
     *,
     default_selected: bool = True,
     enabled_providers: set[str] | None = None,
+    require_video_audio_provider: bool = False,
 ) -> tuple[list[ManifestEntry], list[SelectionDecision], dict]:
     physical = list(entries)
     decisions = [decide(e.path, rules, default_selected=default_selected) for e in physical]
@@ -76,6 +77,15 @@ def apply_selection(
             return provider
         if enabled is not None and provider.name not in enabled:
             return None
+        if (
+            provider.name == VIDEO.name
+            and require_video_audio_provider
+            and enabled is not None
+            and AUDIO.name not in enabled
+        ):
+            # A video container may carry an audio stream. When project policy
+            # requires those streams, visual VideoMAE alone is not full coverage.
+            return None
         return provider
 
     unsupported = sum(e.size for e in unique_selected if e.accessible and active_provider(e) is None)
@@ -91,7 +101,7 @@ def apply_selection(
         bucket["files"] += 1
         bucket["bytes"] += entry.size
 
-    providers: dict[str, dict[str, int | str]] = {}
+    providers: dict[str, dict[str, int | str | bool]] = {}
     for entry in unique_selected:
         provider = active_provider(entry)
         name = provider.name if provider else "unsupported"
@@ -102,6 +112,8 @@ def apply_selection(
             bucket["modality"] = provider.modality
             bucket["objective"] = provider.objective
             bucket["model_family"] = provider.model_family
+            if provider.name == VIDEO.name:
+                bucket["audio_stream_provider_required"] = require_video_audio_provider
 
     summary = {
         "physical_files": len(physical),
