@@ -27,7 +27,7 @@ jobs:
           test -d '${{ inputs.data_root }}'
       - name: Install/update environment
         run: ./scripts/setup.sh
-      - name: Inventory, tokenizer, prepare, derive model and execution plan
+      - name: Inventory, select, prepare and plan every admitted lane
         run: ./scripts/configure.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}'
-      - name: Train exact generated model
-        run: ./scripts/train.sh '${{ inputs.state_dir }}' '${{ inputs.output_dir }}'
+      - name: Train every admitted lane
+        run: ./scripts/train-all.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}' '${{ inputs.output_dir }}'

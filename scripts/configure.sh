@@ -28,21 +28,29 @@ unsupported = int(summary["unsupported_selected_bytes"])
 inaccessible = int(summary["inaccessible_selected_bytes"])
 if require and (unsupported or inaccessible):
     raise SystemExit(
-        "configuration stopped before tokenizer/preparation: "
+        "configuration stopped before training preparation: "
         f"unsupported_selected_bytes={unsupported}, inaccessible_selected_bytes={inaccessible}. "
         "Inspect inventory/manifest.jsonl, corpus/decisions.jsonl, and corpus/summary.json; "
         "implement a training provider, restore access, or make an explicit selection rule with a reason."
     )
 PY
 
+# Text/code/structured lane.
 "${LC[@]}" tokenizer "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --out "$STATE/tokenizer"
 "${LC[@]}" prepare "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --tokenizer "$STATE/tokenizer/tokenizer.model" --out "$STATE/data"
 "${LC[@]}" derive-config --dataset-report "$STATE/data/dataset-report.json" --out "$STATE/training.json"
+
+# One measured host receipt drives both text and modality execution planning.
 "${LC[@]}" hardware --out "$STATE/hardware.json"
 "${LC[@]}" plan-execution \
   --training-config "$STATE/training.json" \
   --hardware "$STATE/hardware.json" \
   --out "$STATE/execution.json" \
+  --require-fit
+"${LC[@]}" plan-modalities \
+  --manifest "$STATE/corpus/manifest.jsonl" \
+  --hardware "$STATE/hardware.json" \
+  --out "$STATE/modalities.json" \
   --require-fit
 
 echo "configuration complete: $STATE"

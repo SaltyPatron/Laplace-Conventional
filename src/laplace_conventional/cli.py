@@ -8,6 +8,7 @@ from .configure import write_training_config
 from .corpus import build_manifest, iter_trainable_records, load_manifest, write_manifest
 from .execution import validate_execution_plan, write_execution_plan
 from .hardware import write_probe
+from .modality_plan import write_modality_plan
 from .prepare import prepare
 from .selection import apply_selection, write_selection
 from .settings import load_settings, section
@@ -52,6 +53,12 @@ def main() -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--require-fit", action="store_true")
 
+    p = sub.add_parser("plan-modalities")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--hardware", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--require-fit", action="store_true")
+
     args = ap.parse_args()
     settings = load_settings(Path(args.project_config))
     corpus_cfg = section(settings, "corpus")
@@ -60,14 +67,19 @@ def main() -> None:
     tokenizer_cfg = section(settings, "tokenizer")
     derivation_cfg = section(settings, "derivation")
     training_cfg = section(settings, "training")
+    modalities_cfg = section(settings, "modalities")
     execution_cfg = section(settings, "execution")
     validation_per_10k = int(corpus_cfg.get("validation_per_10k", 100))
     max_chars = int(records_cfg.get("max_chars", 64_000))
+    enabled_media_providers = {
+        str(cfg["provider"])
+        for cfg in modalities_cfg.values()
+        if isinstance(cfg, dict) and bool(cfg.get("enabled", False)) and cfg.get("provider")
+    }
+    video_cfg = modalities_cfg.get("video", {}) if isinstance(modalities_cfg.get("video", {}), dict) else {}
+    require_video_audio_provider = bool(video_cfg.get("enabled", False) and video_cfg.get("include_audio_track", False))
 
     if args.command == "inventory":
-        # Physical inventory is independent from training selection. Dedupe is
-        # intentionally deferred until selection so an excluded copy cannot
-        # become the canonical target of a selected copy.
         entries, summary = build_manifest(Path(args.root), dedupe=False)
         write_manifest(entries, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -82,6 +94,8 @@ def main() -> None:
             entries,
             rules,
             default_selected=bool(selection_cfg.get("default_selected", True)),
+            enabled_providers=enabled_media_providers,
+            require_video_audio_provider=require_video_audio_provider,
         )
         write_selection(selected, decisions, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -140,4 +154,16 @@ def main() -> None:
         print(json.dumps(plan, indent=2, sort_keys=True))
         if args.require_fit:
             validate_execution_plan(plan)
+        return
+
+    if args.command == "plan-modalities":
+        plan = write_modality_plan(
+            Path(args.manifest),
+            Path(args.hardware),
+            Path(args.out),
+            modality_settings=modalities_cfg,
+            execution_policy=execution_cfg,
+            require_fit=args.require_fit,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True))
         return

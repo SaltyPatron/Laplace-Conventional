@@ -30,7 +30,7 @@ if [[ -z "$TORCH_INDEX_URL" ]]; then
 fi
 
 "$VENV/bin/python" -m pip install "torch==$TORCH_VERSION" --index-url "$TORCH_INDEX_URL"
-extras="train,rl,test"
+extras="train,media,rl,test"
 if [[ "$INSTALL_OFFLOAD" != "0" ]]; then
   extras="$extras,offload"
 fi
@@ -38,7 +38,15 @@ fi
 
 "$VENV/bin/python" - <<'PY'
 import json, sys, torch
-info={"python":sys.version.split()[0],"torch":torch.__version__,"cuda_available":torch.cuda.is_available()}
+import imageio_ffmpeg
+from PIL import Image
+info={
+    "python":sys.version.split()[0],
+    "torch":torch.__version__,
+    "cuda_available":torch.cuda.is_available(),
+    "ffmpeg":imageio_ffmpeg.get_ffmpeg_exe(),
+    "pillow":Image.__version__,
+}
 if torch.cuda.is_available():
     info["gpu"]=torch.cuda.get_device_name(0)
     info["compute_capability"]=torch.cuda.get_device_capability(0)

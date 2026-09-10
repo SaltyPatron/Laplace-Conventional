@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .corpus import ManifestEntry, write_manifest
+from .providers import AUDIO, TEXT, VIDEO, provider_for
 
 
 @dataclass(frozen=True)
@@ -44,10 +45,13 @@ def apply_selection(
     rules: list[dict],
     *,
     default_selected: bool = True,
+    enabled_providers: set[str] | None = None,
+    require_video_audio_provider: bool = False,
 ) -> tuple[list[ManifestEntry], list[SelectionDecision], dict]:
     physical = list(entries)
     decisions = [decide(e.path, rules, default_selected=default_selected) for e in physical]
     decision_by_path = {d.path: d for d in decisions}
+    enabled = set(enabled_providers) if enabled_providers is not None else None
 
     # Dedupe is resolved *after* selection. This prevents an excluded copy from
     # becoming the canonical duplicate target for a selected copy.
@@ -64,7 +68,27 @@ def apply_selection(
         selected_entries.append(replace(entry, duplicate_of=duplicate_of))
 
     unique_selected = [e for e in selected_entries if e.duplicate_of is None]
-    unsupported = sum(e.size for e in unique_selected if e.accessible and not e.trainable)
+
+    def active_provider(entry: ManifestEntry):
+        provider = provider_for(entry)
+        if provider is None:
+            return None
+        if provider.name == TEXT.name:
+            return provider
+        if enabled is not None and provider.name not in enabled:
+            return None
+        if (
+            provider.name == VIDEO.name
+            and require_video_audio_provider
+            and enabled is not None
+            and AUDIO.name not in enabled
+        ):
+            # A video container may carry an audio stream. When project policy
+            # requires those streams, visual VideoMAE alone is not full coverage.
+            return None
+        return provider
+
+    unsupported = sum(e.size for e in unique_selected if e.accessible and active_provider(e) is None)
     inaccessible = sum(e.size for e in unique_selected if not e.accessible)
     selected_bytes = sum(e.size for e in unique_selected)
 
@@ -77,6 +101,20 @@ def apply_selection(
         bucket["files"] += 1
         bucket["bytes"] += entry.size
 
+    providers: dict[str, dict[str, int | str | bool]] = {}
+    for entry in unique_selected:
+        provider = active_provider(entry)
+        name = provider.name if provider else "unsupported"
+        bucket = providers.setdefault(name, {"files": 0, "bytes": 0})
+        bucket["files"] = int(bucket["files"]) + 1
+        bucket["bytes"] = int(bucket["bytes"]) + entry.size
+        if provider:
+            bucket["modality"] = provider.modality
+            bucket["objective"] = provider.objective
+            bucket["model_family"] = provider.model_family
+            if provider.name == VIDEO.name:
+                bucket["audio_stream_provider_required"] = require_video_audio_provider
+
     summary = {
         "physical_files": len(physical),
         "physical_bytes": sum(e.size for e in physical),
@@ -86,11 +124,12 @@ def apply_selection(
         "selected_duplicate_files": sum(1 for e in selected_entries if e.duplicate_of is not None),
         "excluded_files": sum(1 for d in decisions if not d.selected),
         "excluded_bytes": sum(e.size for e in physical if not decision_by_path[e.path].selected),
-        "trainable_selected_bytes": sum(e.size for e in unique_selected if e.accessible and e.trainable),
+        "trainable_selected_bytes": sum(e.size for e in unique_selected if active_provider(e) is not None),
         "unsupported_selected_bytes": unsupported,
         "inaccessible_selected_files": sum(1 for e in unique_selected if not e.accessible),
         "inaccessible_selected_bytes": inaccessible,
         "coverage_complete": unsupported == 0 and inaccessible == 0,
+        "providers": providers,
         "exclusion_reasons": reason_counts,
     }
     return selected_entries, decisions, summary
