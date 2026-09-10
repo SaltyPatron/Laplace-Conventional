@@ -49,6 +49,7 @@ norm_pix_loss = true
 learning_rate = 0.00015
 weight_decay = 0.05
 epochs = 1.0
+checkpoint_minutes = 30
 
 [modalities.audio]
 enabled = true
@@ -72,6 +73,7 @@ num_codevectors_per_group = 320
 learning_rate = 0.0005
 weight_decay = 0.01
 epochs = 1.0
+checkpoint_minutes = 30
 
 [modalities.video]
 enabled = true
@@ -93,6 +95,7 @@ norm_pix_loss = true
 learning_rate = 0.00015
 weight_decay = 0.05
 epochs = 1.0
+checkpoint_minutes = 30
 include_audio_track = true
 
 [execution]
