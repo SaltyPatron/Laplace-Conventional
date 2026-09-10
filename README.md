@@ -13,9 +13,11 @@ The repository separates four facts that the previous implementation incorrectly
 
 ```bash
 ./scripts/setup.sh
-./scripts/configure.sh /vault/Data
-./scripts/train.sh .state checkpoints
+./scripts/configure.sh /vault/Data .state config/default.toml
+./scripts/train.sh .state checkpoints config/default.toml
 ```
+
+`config/default.toml` is the checked-in project policy: deduplication, validation split, record chunking, tokenizer candidates, scaling-law ratio, context rule, optimizer settings, checkpoint cadence, shard size, coverage policy, and physical micro-batch are explicit there. Corpus-dependent dimensions are still generated from measurements rather than checked in as pretend hardware/model presets.
 
 `configure.sh` deliberately stops if unique corpus bytes are classified as unsupported. That is a coverage failure to resolve, not a condition to hide behind a successful language-model run.
 

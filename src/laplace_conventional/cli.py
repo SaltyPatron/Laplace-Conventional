@@ -4,15 +4,17 @@ import argparse
 import json
 from pathlib import Path
 
-from .corpus import build_manifest, write_manifest, load_manifest, iter_trainable_records
-from .tokenizer import choose_tokenizer
-from .prepare import prepare
 from .configure import write_training_config
+from .corpus import build_manifest, iter_trainable_records, load_manifest, write_manifest
 from .hardware import write_probe
+from .prepare import prepare
+from .settings import load_settings, section
+from .tokenizer import choose_tokenizer
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="laplace-conventional")
+    ap.add_argument("--project-config", required=True, help="TOML policy/configuration file")
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("inventory")
@@ -29,31 +31,54 @@ def main() -> None:
     p.add_argument("--manifest", required=True)
     p.add_argument("--tokenizer", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--shard-bytes", type=int, default=512 << 20)
+    p.add_argument("--shard-bytes", type=int)
 
     p = sub.add_parser("derive-config")
     p.add_argument("--dataset-report", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--tokens-per-parameter", type=float, default=20.0)
-    p.add_argument("--context-quantile", choices=["p50", "p90", "p95", "p99", "max"], default="p95")
 
     p = sub.add_parser("hardware")
     p.add_argument("--out", required=True)
 
     args = ap.parse_args()
+    settings = load_settings(Path(args.project_config))
+    corpus_cfg = section(settings, "corpus")
+    records_cfg = section(settings, "records")
+    tokenizer_cfg = section(settings, "tokenizer")
+    derivation_cfg = section(settings, "derivation")
+    training_cfg = section(settings, "training")
+    execution_cfg = section(settings, "execution")
+
     if args.command == "inventory":
-        entries, summary = build_manifest(Path(args.root))
+        entries, summary = build_manifest(Path(args.root), hash_duplicates=bool(corpus_cfg.get("dedupe", True)))
         write_manifest(entries, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
-    elif args.command == "tokenizer":
+        return
+
+    if args.command == "tokenizer":
         root = Path(args.root)
         entries = load_manifest(Path(args.manifest))
+        max_chars = int(records_cfg.get("max_chars", 64_000))
         def factory():
-            return iter_trainable_records(root, entries)
-        print(json.dumps(choose_tokenizer(factory, Path(args.out)), indent=2, sort_keys=True))
-    elif args.command == "prepare":
-        print(json.dumps(prepare(Path(args.root), Path(args.manifest), Path(args.tokenizer), Path(args.out), shard_bytes=args.shard_bytes), indent=2, sort_keys=True))
-    elif args.command == "derive-config":
-        print(json.dumps(write_training_config(Path(args.dataset_report), Path(args.out), tokens_per_parameter=args.tokens_per_parameter, context_quantile=args.context_quantile), indent=2, sort_keys=True))
-    elif args.command == "hardware":
+            return iter_trainable_records(root, entries, max_chars=max_chars)
+        candidates = [int(x) for x in tokenizer_cfg.get("vocab_candidates", [])]
+        print(json.dumps(choose_tokenizer(factory, Path(args.out), candidates), indent=2, sort_keys=True))
+        return
+
+    if args.command == "prepare":
+        shard_bytes = int(args.shard_bytes or execution_cfg.get("shard_bytes", 512 << 20))
+        print(json.dumps(prepare(Path(args.root), Path(args.manifest), Path(args.tokenizer), Path(args.out), shard_bytes=shard_bytes), indent=2, sort_keys=True))
+        return
+
+    if args.command == "derive-config":
+        print(json.dumps(write_training_config(
+            Path(args.dataset_report),
+            Path(args.out),
+            tokens_per_parameter=float(derivation_cfg.get("tokens_per_parameter", 20.0)),
+            context_quantile=str(derivation_cfg.get("context_quantile", "p95")),
+            training_overrides=training_cfg,
+        ), indent=2, sort_keys=True))
+        return
+
+    if args.command == "hardware":
         print(json.dumps(write_probe(Path(args.out)), indent=2, sort_keys=True))

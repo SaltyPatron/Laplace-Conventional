@@ -18,9 +18,6 @@ def estimate_llama_params(vocab: int, layers: int, hidden: int, ffn: int) -> int
 
 
 def derive_shape(target_params: int, vocab: int) -> dict:
-    # Expand the candidate width until the deepest conventional candidate exceeds
-    # the measured target. This prevents a hidden fixed ceiling from silently turning
-    # a large corpus into the largest shape the source code happened to enumerate.
     max_layers = 128
     max_hidden = 256
     while estimate_llama_params(vocab, max_layers, max_hidden, _ffn_dim(max_hidden)) < target_params * 1.25:
@@ -33,7 +30,8 @@ def derive_shape(target_params: int, vocab: int) -> dict:
         ffn = _ffn_dim(hidden)
         for layers in range(4, max_layers + 1, 2):
             params = estimate_llama_params(vocab, layers, hidden, ffn)
-            candidates.append((abs(math.log(max(params, 1) / max(target_params, 1))), params, layers, hidden, heads, ffn))
+            error = abs(math.log(max(params, 1) / max(target_params, 1)))
+            candidates.append((error, params, layers, hidden, heads, ffn))
     _, params, layers, hidden, heads, ffn = min(candidates)
     return {
         "architecture": "llama",
@@ -46,7 +44,15 @@ def derive_shape(target_params: int, vocab: int) -> dict:
     }
 
 
-def derive_training_config(dataset_report: dict, *, tokens_per_parameter: float = 20.0, context_quantile: str = "p95") -> dict:
+def derive_training_config(
+    dataset_report: dict,
+    *,
+    tokens_per_parameter: float = 20.0,
+    context_quantile: str = "p95",
+    training_overrides: dict | None = None,
+) -> dict:
+    if tokens_per_parameter <= 0:
+        raise ValueError("tokens_per_parameter must be positive")
     train_tokens = int(dataset_report["splits"]["train"]["tokens"])
     vocab = int(dataset_report["vocab_size"])
     target_params = max(vocab * 256, int(train_tokens / tokens_per_parameter))
@@ -55,6 +61,27 @@ def derive_training_config(dataset_report: dict, *, tokens_per_parameter: float 
     context = 256
     while context < max(observed, 256):
         context *= 2
+
+    overrides = dict(training_overrides or {})
+    checkpoint_fraction = float(overrides.pop("checkpoint_fraction", 0.01))
+    minimum_checkpoint_tokens = int(overrides.pop("minimum_checkpoint_tokens", 10_000_000))
+    training = {
+        "context_length": context,
+        "global_tokens_per_step": max(context, 131_072),
+        "learning_rate": 3e-4,
+        "weight_decay": 0.1,
+        "warmup_ratio": 0.01,
+        "min_lr_ratio": 0.1,
+        "gradient_clip": 1.0,
+        "epochs": 1.0,
+    }
+    training.update(overrides)
+    training["context_length"] = context
+    training["global_tokens_per_step"] = max(context, int(training["global_tokens_per_step"]))
+    training["checkpoint_tokens"] = max(
+        minimum_checkpoint_tokens,
+        int(train_tokens * checkpoint_fraction) if train_tokens else minimum_checkpoint_tokens,
+    )
     return {
         "derivation": {
             "train_tokens": train_tokens,
@@ -63,18 +90,13 @@ def derive_training_config(dataset_report: dict, *, tokens_per_parameter: float 
             "context_rule": f"next_power_of_two({context_quantile}_record_tokens)",
             "observed_context_tokens": observed,
         },
-        "model": shape | {"vocab_size": vocab, "max_position_embeddings": context, "rms_norm_eps": 1e-5, "rope_theta": 10000.0},
-        "training": {
-            "context_length": context,
-            "global_tokens_per_step": max(context, 131072),
-            "learning_rate": 3e-4,
-            "weight_decay": 0.1,
-            "warmup_ratio": 0.01,
-            "min_lr_ratio": 0.1,
-            "gradient_clip": 1.0,
-            "epochs": 1.0,
-            "checkpoint_tokens": max(10_000_000, train_tokens // 100 if train_tokens else 10_000_000),
+        "model": shape | {
+            "vocab_size": vocab,
+            "max_position_embeddings": context,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 10_000.0,
         },
+        "training": training,
     }
 
 

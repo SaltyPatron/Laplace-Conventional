@@ -1,0 +1,29 @@
+[corpus]
+dedupe = true
+validation_per_10k = 100
+require_full_coverage = true
+
+[records]
+max_chars = 64000
+
+[tokenizer]
+vocab_candidates = [8192, 16384, 32768, 65536]
+
+[derivation]
+tokens_per_parameter = 20.0
+context_quantile = "p95"
+
+[training]
+global_tokens_per_step = 131072
+learning_rate = 0.0003
+weight_decay = 0.1
+warmup_ratio = 0.01
+min_lr_ratio = 0.1
+gradient_clip = 1.0
+epochs = 1.0
+checkpoint_fraction = 0.01
+minimum_checkpoint_tokens = 10000000
+
+[execution]
+micro_batch_size = 1
+shard_bytes = 536870912

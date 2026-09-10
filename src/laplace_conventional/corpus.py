@@ -192,7 +192,7 @@ def _canonical_json(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def iter_records(root: Path, entry: ManifestEntry) -> Iterator[Record]:
+def iter_records(root: Path, entry: ManifestEntry, *, max_chars: int = 64_000) -> Iterator[Record]:
     if not entry.trainable or entry.duplicate_of is not None:
         return
     path = root / entry.path
@@ -227,8 +227,6 @@ def iter_records(root: Path, entry: ManifestEntry) -> Iterator[Record]:
                     idx += 1
         return
     if entry.format == "xml":
-        # Emit direct children of the document root as records. A depth counter avoids
-        # multiplying nested descendants into duplicate training examples.
         depth = 0
         for event, elem in ET.iterparse(path, events=("start", "end")):
             if event == "start":
@@ -255,14 +253,14 @@ def iter_records(root: Path, entry: ManifestEntry) -> Iterator[Record]:
         if buf:
             yield Record(entry.path, entry.source, idx, entry.format, "\n".join(buf))
         return
-    for chunk in _chunk_text(_read_utf8(path)):
+    for chunk in _chunk_text(_read_utf8(path), max_chars=max_chars):
         yield Record(entry.path, entry.source, idx, entry.format, chunk)
         idx += 1
 
 
-def iter_trainable_records(root: Path, entries: Iterable[ManifestEntry]) -> Iterator[Record]:
+def iter_trainable_records(root: Path, entries: Iterable[ManifestEntry], *, max_chars: int = 64_000) -> Iterator[Record]:
     for entry in entries:
-        yield from iter_records(root, entry)
+        yield from iter_records(root, entry, max_chars=max_chars)
 
 
 def split_name(record: Record, *, validation_per_10k: int = 100) -> str:

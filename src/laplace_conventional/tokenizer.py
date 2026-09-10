@@ -21,12 +21,6 @@ class TokenizerCandidate:
     description_bits: float
 
 
-def candidate_vocab_sizes() -> list[int]:
-    # Candidate generation is intentionally separate from selection. Selection is by
-    # measured description length, not by a hard-coded "32k is good" assertion.
-    return [8_192, 16_384, 32_768, 65_536]
-
-
 def _sentences(records: Iterable[Record], split: str) -> Iterator[str]:
     for record in records:
         if split_name(record) == split and record.text.strip():
@@ -63,8 +57,9 @@ def train_candidate(records_factory, out_dir: Path, vocab_size: int) -> Tokenize
     return TokenizerCandidate(vocab_size, proc.vocab_size(), model_bytes, tokens, utf8_bytes, bits)
 
 
-def choose_tokenizer(records_factory, out_dir: Path, candidates: list[int] | None = None) -> dict:
-    candidates = candidates or candidate_vocab_sizes()
+def choose_tokenizer(records_factory, out_dir: Path, candidates: list[int]) -> dict:
+    if not candidates:
+        raise ValueError("tokenizer candidate list may not be empty")
     results = [train_candidate(records_factory, out_dir, size) for size in candidates]
     best = min(results, key=lambda x: x.description_bits)
     src = out_dir / f"sp-{best.requested_vocab}.model"
