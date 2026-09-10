@@ -34,8 +34,8 @@ AUDIO = TrainingProvider(
 VIDEO = TrainingProvider(
     name="video-videomae",
     modality="video",
-    objective="masked spatiotemporal patch pixel reconstruction",
-    model_family="videomae",
+    objective="masked spatiotemporal patch pixel reconstruction; container audio streams are routed through audio-wav2vec2 when enabled",
+    model_family="videomae + optional wav2vec2 audio stream",
 )
 
 PROVIDERS = {p.name: p for p in (TEXT, IMAGE, AUDIO, VIDEO)}
@@ -53,20 +53,3 @@ def provider_for(entry: ManifestEntry) -> TrainingProvider | None:
     if entry.kind == "video":
         return VIDEO
     return None
-
-
-def provider_summary(entries: list[ManifestEntry]) -> dict[str, dict[str, int | str]]:
-    result: dict[str, dict[str, int | str]] = {}
-    for entry in entries:
-        if entry.duplicate_of is not None:
-            continue
-        provider = provider_for(entry)
-        name = provider.name if provider else "unsupported"
-        bucket = result.setdefault(name, {"files": 0, "bytes": 0})
-        bucket["files"] = int(bucket["files"]) + 1
-        bucket["bytes"] = int(bucket["bytes"]) + entry.size
-        if provider:
-            bucket["modality"] = provider.modality
-            bucket["objective"] = provider.objective
-            bucket["model_family"] = provider.model_family
-    return result
