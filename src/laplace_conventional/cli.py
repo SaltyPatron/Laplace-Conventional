@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .configure import write_training_config
 from .corpus import build_manifest, iter_trainable_records, load_manifest, write_manifest
+from .execution import validate_execution_plan, write_execution_plan
 from .hardware import write_probe
 from .prepare import prepare
 from .settings import load_settings, section
@@ -40,6 +41,12 @@ def main() -> None:
     p = sub.add_parser("hardware")
     p.add_argument("--out", required=True)
 
+    p = sub.add_parser("plan-execution")
+    p.add_argument("--training-config", required=True)
+    p.add_argument("--hardware", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--require-fit", action="store_true")
+
     args = ap.parse_args()
     settings = load_settings(Path(args.project_config))
     corpus_cfg = section(settings, "corpus")
@@ -60,8 +67,10 @@ def main() -> None:
     if args.command == "tokenizer":
         root = Path(args.root)
         entries = load_manifest(Path(args.manifest))
+
         def factory():
             return iter_trainable_records(root, entries, max_chars=max_chars)
+
         candidates = [int(x) for x in tokenizer_cfg.get("vocab_candidates", [])]
         print(json.dumps(choose_tokenizer(
             factory,
@@ -96,3 +105,16 @@ def main() -> None:
 
     if args.command == "hardware":
         print(json.dumps(write_probe(Path(args.out)), indent=2, sort_keys=True))
+        return
+
+    if args.command == "plan-execution":
+        plan = write_execution_plan(
+            Path(args.training_config),
+            Path(args.hardware),
+            Path(args.out),
+            execution_policy=execution_cfg,
+        )
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        if args.require_fit:
+            validate_execution_plan(plan)
+        return

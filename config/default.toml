@@ -25,5 +25,15 @@ checkpoint_fraction = 0.01
 minimum_checkpoint_tokens = 10000000
 
 [execution]
+# Model dimensions are never changed by this section. This section only chooses
+# how the exact generated model is physically executed on the measured host.
+backend = "auto" # auto | native | deepspeed_zero3_cpu_offload
+precision = "fp32"
 micro_batch_size = 1
 shard_bytes = 536870912
+gpu_memory_fraction = 0.88
+ram_memory_fraction = 0.75
+activation_reserve_fraction = 0.20
+native_state_bytes_per_parameter = 16
+zero3_layer_working_set_multiplier = 3.0
+zero3_cpu_state_overhead = 1.20

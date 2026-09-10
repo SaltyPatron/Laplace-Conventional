@@ -27,9 +27,7 @@ jobs:
           test -d '${{ inputs.data_root }}'
       - name: Install/update environment
         run: ./scripts/setup.sh
-      - name: Inventory, tokenizer, prepare, derive config
+      - name: Inventory, tokenizer, prepare, derive model and execution plan
         run: ./scripts/configure.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}'
-      - name: Train
-        env:
-          MICRO_BATCH_SIZE: '1'
+      - name: Train exact generated model
         run: ./scripts/train.sh '${{ inputs.state_dir }}' '${{ inputs.output_dir }}'

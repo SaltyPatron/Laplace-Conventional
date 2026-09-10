@@ -33,5 +33,10 @@ PY
 "${LC[@]}" prepare "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --tokenizer "$STATE/tokenizer/tokenizer.model" --out "$STATE/data"
 "${LC[@]}" derive-config --dataset-report "$STATE/data/dataset-report.json" --out "$STATE/training.json"
 "${LC[@]}" hardware --out "$STATE/hardware.json"
+"${LC[@]}" plan-execution \
+  --training-config "$STATE/training.json" \
+  --hardware "$STATE/hardware.json" \
+  --out "$STATE/execution.json" \
+  --require-fit
 
 echo "configuration complete: $STATE"
