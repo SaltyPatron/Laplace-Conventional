@@ -1,8 +1,11 @@
+.venv/
 __pycache__/
 *.py[cod]
-.venv/
-dist/
-build/
-*.egg-info/
-*.pt
-*.tmp
+.pytest_cache/
+.state/
+artifacts/
+checkpoints/
+*.bin
+*.idx
+*.model
+*.vocab

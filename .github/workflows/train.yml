@@ -1,69 +1,35 @@
-name: train-conventional
-
+name: train
 on:
   workflow_dispatch:
     inputs:
-      config:
-        description: Training configuration committed in this repository
+      data_root:
+        description: Corpus root on the self-hosted runner
         required: true
-        default: configs/1080ti.json
-      max_steps:
-        description: Optional step override; 0 uses config
+        default: /vault/Data
+      state_dir:
+        description: Generated state directory
         required: true
-        default: "0"
-      rl_steps:
-        description: Actor-critic steps after pretraining; 0 disables
+        default: /opt/laplace/conventional/state
+      output_dir:
+        description: Checkpoint directory
         required: true
-        default: "0"
-
-concurrency:
-  group: conventional-gpu
-  cancel-in-progress: false
+        default: /opt/laplace/conventional/checkpoints
 
 jobs:
   train:
-    runs-on: [self-hosted, Linux, X64, laplace-conventional, gpu, pascal]
+    runs-on: [self-hosted, Linux, X64, laplace-conventional, gpu, pascal, 1080ti]
     timeout-minutes: 10080
-    env:
-      LAPLACE_PG_DSN: dbname=laplace
-      PYTHONUNBUFFERED: "1"
-      VENV: /opt/laplace/conventional/venv
     steps:
       - uses: actions/checkout@v4
-      - name: GPU receipt
-        shell: bash
+      - name: Verify GPU and corpus mount
         run: |
-          set -euo pipefail
           nvidia-smi
-          nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader
-      - name: Python environment
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv "$VENV"
-          "$VENV/bin/python" -m pip install --upgrade pip
-          "$VENV/bin/pip" install -r requirements-pascal.txt
-          "$VENV/bin/pip" install -e .
-          "$VENV/bin/python" - <<'PY'
-          import torch
-          assert torch.cuda.is_available(), "CUDA is not available"
-          p = torch.cuda.get_device_properties(0)
-          print({"torch": torch.__version__, "gpu": p.name, "vram": p.total_memory})
-          PY
-      - name: Gradient smoke
-        run: "$VENV/bin/python scripts/smoke.py"
-      - name: Train full substrate stream
-        shell: bash
-        run: |
-          set -euo pipefail
-          args=(--config "${{ inputs.config }}")
-          if [[ "${{ inputs.max_steps }}" != "0" ]]; then args+=(--max-steps "${{ inputs.max_steps }}"); fi
-          "$VENV/bin/python" -m laplace_conventional.train "${args[@]}"
-      - name: Policy-gradient RL
-        if: ${{ inputs.rl_steps != '0' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          latest="$(find /opt/laplace/conventional/checkpoints -name 'step-*.pt' -type f -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
-          test -n "$latest"
-          "$VENV/bin/python" -m laplace_conventional.rl --checkpoint "$latest" --steps "${{ inputs.rl_steps }}" --output /opt/laplace/conventional/checkpoints/rl-latest.pt
+          test -d '${{ inputs.data_root }}'
+      - name: Install/update environment
+        run: ./scripts/setup.sh
+      - name: Inventory, tokenizer, prepare, derive config
+        run: ./scripts/configure.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}'
+      - name: Train
+        env:
+          MICRO_BATCH_SIZE: '1'
+        run: ./scripts/train.sh '${{ inputs.state_dir }}' '${{ inputs.output_dir }}'
