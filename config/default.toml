@@ -1,7 +1,12 @@
 [corpus]
-dedupe = true
 validation_per_10k = 100
 require_full_coverage = true
+
+[selection]
+# Physical inventory and training admission are distinct. Every exclusion must
+# be an explicit ordered rule with a reason; the default is to select everything.
+default_selected = true
+rules = []
 
 [records]
 max_chars = 64000

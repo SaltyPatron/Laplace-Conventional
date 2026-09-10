@@ -9,6 +9,7 @@ from .corpus import build_manifest, iter_trainable_records, load_manifest, write
 from .execution import validate_execution_plan, write_execution_plan
 from .hardware import write_probe
 from .prepare import prepare
+from .selection import apply_selection, write_selection
 from .settings import load_settings, section
 from .tokenizer import choose_tokenizer
 
@@ -20,6 +21,10 @@ def main() -> None:
 
     p = sub.add_parser("inventory")
     p.add_argument("root")
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("select")
+    p.add_argument("--manifest", required=True, help="physical inventory manifest")
     p.add_argument("--out", required=True)
 
     p = sub.add_parser("tokenizer")
@@ -50,6 +55,7 @@ def main() -> None:
     args = ap.parse_args()
     settings = load_settings(Path(args.project_config))
     corpus_cfg = section(settings, "corpus")
+    selection_cfg = section(settings, "selection")
     records_cfg = section(settings, "records")
     tokenizer_cfg = section(settings, "tokenizer")
     derivation_cfg = section(settings, "derivation")
@@ -59,8 +65,25 @@ def main() -> None:
     max_chars = int(records_cfg.get("max_chars", 64_000))
 
     if args.command == "inventory":
-        entries, summary = build_manifest(Path(args.root), dedupe=bool(corpus_cfg.get("dedupe", True)))
+        # Physical inventory is independent from training selection. Dedupe is
+        # intentionally deferred until selection so an excluded copy cannot
+        # become the canonical target of a selected copy.
+        entries, summary = build_manifest(Path(args.root), dedupe=False)
         write_manifest(entries, summary, Path(args.out))
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return
+
+    if args.command == "select":
+        entries = load_manifest(Path(args.manifest))
+        rules = selection_cfg.get("rules", [])
+        if not isinstance(rules, list):
+            raise TypeError("selection.rules must be an array of tables")
+        selected, decisions, summary = apply_selection(
+            entries,
+            rules,
+            default_selected=bool(selection_cfg.get("default_selected", True)),
+        )
+        write_selection(selected, decisions, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
         return
 
