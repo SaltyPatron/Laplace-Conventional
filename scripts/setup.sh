@@ -5,6 +5,7 @@ VENV="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}"
 PYTHON="${PYTHON:-python3}"
 TORCH_VERSION="${TORCH_VERSION:-2.14.0}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
+INSTALL_OFFLOAD="${INSTALL_OFFLOAD:-1}"
 
 command -v "$PYTHON" >/dev/null || { echo "python3 is required" >&2; exit 2; }
 "$PYTHON" - <<'PY'
@@ -29,16 +30,29 @@ if [[ -z "$TORCH_INDEX_URL" ]]; then
 fi
 
 "$VENV/bin/python" -m pip install "torch==$TORCH_VERSION" --index-url "$TORCH_INDEX_URL"
-"$VENV/bin/python" -m pip install -e "$ROOT[train,rl,test]"
+extras="train,rl,test"
+if [[ "$INSTALL_OFFLOAD" != "0" ]]; then
+  extras="$extras,offload"
+fi
+"$VENV/bin/python" -m pip install -e "$ROOT[$extras]"
+
 "$VENV/bin/python" - <<'PY'
-import json, torch
-info={"python": __import__('sys').version.split()[0], "torch":torch.__version__,"cuda_available":torch.cuda.is_available()}
+import json, sys, torch
+info={"python":sys.version.split()[0],"torch":torch.__version__,"cuda_available":torch.cuda.is_available()}
 if torch.cuda.is_available():
     info["gpu"]=torch.cuda.get_device_name(0)
     info["compute_capability"]=torch.cuda.get_device_capability(0)
+    info["gpu_memory_bytes"]=torch.cuda.get_device_properties(0).total_memory
     if info["compute_capability"][0] < 6:
         raise SystemExit(f"GPU compute capability too old: {info['compute_capability']}")
 print(json.dumps(info))
 PY
+
+if [[ "$INSTALL_OFFLOAD" != "0" ]]; then
+  "$VENV/bin/python" - <<'PY'
+import deepspeed
+print(f"deepspeed={deepspeed.__version__}")
+PY
+fi
 
 echo "environment ready: $VENV"
