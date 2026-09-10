@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .corpus import load_manifest
+from .corpus import ManifestEntry, load_manifest
 from .execution import validate_execution_plan
-from .modality_data import AudioChunkDataset, ImageFrameDataset, VideoClipDataset, provider_entries
+from .modality_data import (
+    AudioChunkDataset,
+    ImageFrameDataset,
+    VideoClipDataset,
+    probe_audio_stream,
+    provider_entries,
+)
 from .modality_models import build_provider_model
+from .providers import AUDIO, VIDEO
 from .runtime import accelerator_for_plan
 
 
@@ -29,15 +34,30 @@ def _video_mask(batch_size: int, cfg: dict, device: torch.device) -> torch.Tenso
     return mask
 
 
+def _feature_attention_mask(base_model, attention_mask: torch.Tensor) -> torch.Tensor:
+    lengths = attention_mask.sum(dim=-1).to(dtype=torch.long)
+    kernels = tuple(int(x) for x in base_model.config.conv_kernel)
+    strides = tuple(int(x) for x in base_model.config.conv_stride)
+    if len(kernels) != len(strides):
+        raise RuntimeError("Wav2Vec2 conv kernel/stride metadata mismatch")
+    feature_lengths = lengths
+    max_feature_length = attention_mask.shape[-1]
+    for kernel, stride in zip(kernels, strides):
+        feature_lengths = torch.div(feature_lengths - kernel, stride, rounding_mode="floor") + 1
+        max_feature_length = (max_feature_length - kernel) // stride + 1
+    feature_lengths = feature_lengths.clamp(min=0, max=max_feature_length)
+    positions = torch.arange(max_feature_length, device=attention_mask.device)[None, :]
+    return positions < feature_lengths[:, None]
+
+
 def _audio_pretraining_inputs(model, batch: dict, cfg: dict) -> dict:
     from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 
     input_values = batch["input_values"]
     attention_mask = batch["attention_mask"]
-    raw_length = input_values.shape[-1]
-    feature_length = int(model._get_feat_extract_output_lengths(raw_length))
-    feature_attention = model._get_feature_vector_attention_mask(feature_length, attention_mask)
-    shape = (input_values.shape[0], feature_length)
+    base_model = getattr(model, "module", model)
+    feature_attention = _feature_attention_mask(base_model, attention_mask)
+    shape = tuple(feature_attention.shape)
     mask_np = _compute_mask_indices(
         shape,
         mask_prob=float(cfg["mask_time_prob"]),
@@ -58,7 +78,7 @@ def _audio_pretraining_inputs(model, batch: dict, cfg: dict) -> dict:
     }
 
 
-def _dataset(modality: str, root: Path, entries, cfg: dict):
+def _dataset(modality: str, root: Path, entries: list[ManifestEntry], cfg: dict):
     if modality == "image":
         return ImageFrameDataset(root, entries, image_size=int(cfg["image_size"]))
     if modality == "audio":
@@ -103,6 +123,83 @@ def _mean_validation_loss(modality: str, model, loader, cfg: dict, accelerator) 
     return (total / count if count else None), count
 
 
+def _video_audio_entries(
+    root: Path,
+    candidates: list[ManifestEntry],
+) -> tuple[list[ManifestEntry], list[str]]:
+    with_audio: list[ManifestEntry] = []
+    without_audio: list[str] = []
+    for entry in candidates:
+        if probe_audio_stream(root / entry.path):
+            with_audio.append(entry)
+        else:
+            without_audio.append(entry.path)
+    return with_audio, without_audio
+
+
+def _resolved_entries(
+    modality: str,
+    root: Path,
+    entries: list[ManifestEntry],
+    provider: str,
+    whole_plan: dict,
+    validation_per_10k: int,
+) -> tuple[list[ManifestEntry], list[ManifestEntry], dict]:
+    train_entries = provider_entries(
+        entries,
+        provider,
+        split="train",
+        validation_per_10k=validation_per_10k,
+    )
+    validation_entries = provider_entries(
+        entries,
+        provider,
+        split="validation",
+        validation_per_10k=validation_per_10k,
+    )
+    receipt: dict = {
+        "direct_training_files": len(train_entries),
+        "direct_validation_files": len(validation_entries),
+    }
+    if modality != "audio":
+        return train_entries, validation_entries, receipt
+
+    video_item = whole_plan.get("video", {})
+    include_video_audio = bool(
+        video_item.get("enabled")
+        and video_item.get("present")
+        and video_item.get("config", {}).get("include_audio_track", False)
+    )
+    if not include_video_audio:
+        receipt["video_audio_enabled"] = False
+        return train_entries, validation_entries, receipt
+
+    candidate_train = provider_entries(
+        entries,
+        VIDEO.name,
+        split="train",
+        validation_per_10k=validation_per_10k,
+    )
+    candidate_validation = provider_entries(
+        entries,
+        VIDEO.name,
+        split="validation",
+        validation_per_10k=validation_per_10k,
+    )
+    video_train, no_audio_train = _video_audio_entries(root, candidate_train)
+    video_validation, no_audio_validation = _video_audio_entries(root, candidate_validation)
+    receipt.update({
+        "video_audio_enabled": True,
+        "video_training_candidates": len(candidate_train),
+        "video_validation_candidates": len(candidate_validation),
+        "video_training_with_audio": len(video_train),
+        "video_validation_with_audio": len(video_validation),
+        "video_without_audio_training": no_audio_train,
+        "video_without_audio_validation": no_audio_validation,
+    })
+    return train_entries + video_train, validation_entries + video_validation, receipt
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train a selected conventional self-supervised modality provider.")
     ap.add_argument("--modality", choices=["image", "audio", "video"], required=True)
@@ -130,32 +227,47 @@ def main() -> None:
         gradient_clip=gradient_clip,
     )
 
+    root = Path(args.root)
     entries = load_manifest(Path(args.manifest))
-    train_entries = provider_entries(
+    train_entries, validation_entries, source_receipt = _resolved_entries(
+        args.modality,
+        root,
         entries,
         provider,
-        split="train",
-        validation_per_10k=args.validation_per_10k,
+        whole_plan,
+        args.validation_per_10k,
     )
-    validation_entries = provider_entries(
-        entries,
-        provider,
-        split="validation",
-        validation_per_10k=args.validation_per_10k,
-    )
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    if accelerator.is_main_process:
+        (out / "source-receipt.json").write_text(
+            json.dumps(source_receipt, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
     if not train_entries:
+        if args.modality == "audio" and not validation_entries and source_receipt.get("video_audio_enabled"):
+            # Candidate video containers were explicitly probed and none contains
+            # an audio stream; there is no audio objective to execute for them.
+            if accelerator.is_main_process:
+                (out / "training-receipt.json").write_text(json.dumps({
+                    "modality": "audio",
+                    "provider": AUDIO.name,
+                    "status": "no_selected_audio_streams_present",
+                    "source_receipt": source_receipt,
+                }, indent=2, sort_keys=True), encoding="utf-8")
+            return
         raise RuntimeError(f"no training files for provider {provider}")
 
     model = build_provider_model(provider, cfg)
     micro_batch = int(execution["micro_batch_size"])
     train_loader = DataLoader(
-        _dataset(args.modality, Path(args.root), train_entries, cfg),
+        _dataset(args.modality, root, train_entries, cfg),
         batch_size=micro_batch,
         num_workers=args.workers,
         pin_memory=torch.cuda.is_available(),
     )
     validation_loader = DataLoader(
-        _dataset(args.modality, Path(args.root), validation_entries, cfg),
+        _dataset(args.modality, root, validation_entries, cfg),
         batch_size=micro_batch,
         num_workers=args.workers,
         pin_memory=torch.cuda.is_available(),
@@ -177,8 +289,6 @@ def main() -> None:
     epochs = float(cfg.get("epochs", 1.0))
     if epochs <= 0 or not epochs.is_integer():
         raise ValueError("modality epochs must currently be a positive whole number to guarantee complete passes")
-    out = Path(args.output)
-    out.mkdir(parents=True, exist_ok=True)
     total_batches = 0
     total_examples = 0
     last_loss: float | None = None
@@ -248,6 +358,7 @@ def main() -> None:
             "batches": total_batches,
             "examples": total_examples,
             "last_loss": last_loss,
+            "source_receipt": source_receipt,
             "execution": execution,
         }, indent=2, sort_keys=True), encoding="utf-8")
 
