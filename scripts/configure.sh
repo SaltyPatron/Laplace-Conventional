@@ -20,9 +20,10 @@ summary = json.load(open(sys.argv[1], encoding="utf-8"))
 with open(sys.argv[2], "rb") as f:
     cfg = tomllib.load(f)
 require = bool(cfg.get("corpus", {}).get("require_full_coverage", True))
-if require and summary["unsupported_unique_bytes"]:
+unsupported = int(summary["unsupported_selected_bytes"])
+if require and unsupported:
     raise SystemExit(
-        f"configuration stopped: {summary['unsupported_unique_bytes']} unique corpus bytes are unsupported. "
+        f"configuration stopped: {unsupported} selected corpus bytes are unsupported. "
         "Inspect corpus/summary.json; implement coverage or make an explicit policy change in the project config."
     )
 PY
