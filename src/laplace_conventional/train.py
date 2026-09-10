@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
+from .execution import validate_execution_plan
 from .model import build_model
 from .tokenizer_io import save_transformers_tokenizer
 
@@ -79,9 +80,46 @@ def _raw_loader(dataset: TokenShardDataset, micro_batch: int, workers: int) -> D
     )
 
 
+def _accelerator(plan: dict, grad_accum: int, gradient_clip: float):
+    from accelerate import Accelerator
+
+    precision = str(plan["precision"])
+    mixed_precision = {"fp32": "no", "fp16": "fp16", "bf16": "bf16"}[precision]
+    backend = str(plan["backend"])
+    if backend == "native":
+        return Accelerator(
+            gradient_accumulation_steps=grad_accum,
+            mixed_precision=mixed_precision,
+        )
+    if backend == "deepspeed_zero3_cpu_offload":
+        try:
+            from accelerate import DeepSpeedPlugin
+            import deepspeed  # noqa: F401 -- fail before allocating the model if missing
+        except ImportError as exc:
+            raise RuntimeError(
+                "execution plan requires DeepSpeed ZeRO-3 CPU offload; run scripts/setup.sh with offload support"
+            ) from exc
+        plugin = DeepSpeedPlugin(
+            zero_stage=3,
+            offload_optimizer_device="cpu",
+            offload_param_device="cpu",
+            zero3_init_flag=True,
+            zero3_save_16bit_model=precision != "fp32",
+            gradient_accumulation_steps=grad_accum,
+            gradient_clipping=gradient_clip,
+        )
+        return Accelerator(
+            gradient_accumulation_steps=grad_accum,
+            mixed_precision=mixed_precision,
+            deepspeed_plugin=plugin,
+        )
+    raise RuntimeError(f"unsupported execution backend: {backend}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--execution-plan", required=True)
     ap.add_argument("--data", required=True)
     ap.add_argument("--dataset-report", required=True)
     ap.add_argument("--output", required=True)
@@ -90,17 +128,30 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=2)
     args = ap.parse_args()
 
-    from accelerate import Accelerator, PartialState
-
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    plan = json.loads(Path(args.execution_plan).read_text(encoding="utf-8"))
+    validate_execution_plan(plan)
     report = json.loads(Path(args.dataset_report).read_text(encoding="utf-8"))
     train_cfg = cfg["training"]
     context = int(train_cfg["context_length"])
-    micro_batch = int(os.environ.get("MICRO_BATCH_SIZE", "1"))
-    global_tokens = int(train_cfg["global_tokens_per_step"])
-    world = PartialState().num_processes
-    grad_accum = max(1, math.ceil(global_tokens / (micro_batch * context * world)))
-    accelerator = Accelerator(gradient_accumulation_steps=grad_accum)
+
+    planned_micro_batch = int(plan["micro_batch_size"])
+    micro_batch = int(os.environ.get("MICRO_BATCH_SIZE", str(planned_micro_batch)))
+    if micro_batch != planned_micro_batch:
+        raise RuntimeError(
+            f"MICRO_BATCH_SIZE={micro_batch} differs from execution plan {planned_micro_batch}; regenerate execution.json instead of bypassing preflight"
+        )
+
+    requested_global_tokens = int(train_cfg["global_tokens_per_step"])
+    world = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    grad_accum = max(1, math.ceil(requested_global_tokens / (micro_batch * context * world)))
+    effective_global_tokens = micro_batch * context * world * grad_accum
+    gradient_clip = float(train_cfg["gradient_clip"])
+    accelerator = _accelerator(plan, grad_accum, gradient_clip)
+
+    # Build after the execution provider is selected. In ZeRO-3 mode this lets
+    # Accelerate/DeepSpeed own the allocation path instead of first materializing
+    # a full CUDA model and OOMing before offload can engage.
     model = build_model(Path(args.config))
     model.gradient_checkpointing_enable()
     pad_id = int(report["special_token_ids"]["pad"])
@@ -113,7 +164,7 @@ def main() -> None:
         betas=(0.9, 0.95),
     )
     total_tokens = int(report["splits"]["train"]["tokens"] * float(train_cfg["epochs"]))
-    optimizer_steps = max(1, math.ceil(total_tokens / global_tokens))
+    optimizer_steps = max(1, math.ceil(total_tokens / effective_global_tokens))
     warmup_steps = max(1, round(optimizer_steps * float(train_cfg["warmup_ratio"])))
     min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.1))
 
@@ -146,6 +197,17 @@ def main() -> None:
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
+    if accelerator.is_main_process:
+        (out / "execution-receipt.json").write_text(json.dumps({
+            "execution_plan": plan,
+            "world_size": accelerator.num_processes,
+            "gradient_accumulation_steps": grad_accum,
+            "requested_global_tokens_per_step": requested_global_tokens,
+            "effective_global_tokens_per_step": effective_global_tokens,
+            "target_tokens": total_tokens,
+            "optimizer_steps": optimizer_steps,
+        }, indent=2, sort_keys=True), encoding="utf-8")
+
     checkpoint_tokens = int(train_cfg["checkpoint_tokens"])
     next_checkpoint = ((seen_tokens // checkpoint_tokens) + 1) * checkpoint_tokens
     optimizer.zero_grad(set_to_none=True)
@@ -160,7 +222,7 @@ def main() -> None:
                 result = model(**batch)
                 accelerator.backward(result.loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), float(train_cfg["gradient_clip"]))
+                    accelerator.clip_grad_norm_(model.parameters(), gradient_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -171,6 +233,7 @@ def main() -> None:
                     "batch": batches_total,
                     "epoch": epoch,
                     "batch_in_epoch": batch_in_epoch,
+                    "backend": plan["backend"],
                     "loss": float(result.loss.detach()),
                     "lr": scheduler.get_last_lr()[0],
                     "seen_tokens": seen_tokens,
@@ -187,7 +250,8 @@ def main() -> None:
                         batch_in_epoch=batch_in_epoch,
                         batches_total=batches_total,
                     )
-                next_checkpoint += checkpoint_tokens
+                while next_checkpoint <= seen_tokens:
+                    next_checkpoint += checkpoint_tokens
             if seen_tokens >= total_tokens and accelerator.sync_gradients:
                 break
         if not made_progress:
@@ -212,5 +276,13 @@ def main() -> None:
         final_model = out / "final-model"
         final_model.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
-        unwrapped.save_pretrained(final_model, state_dict=accelerator.get_state_dict(model), safe_serialization=True)
+        unwrapped.save_pretrained(
+            final_model,
+            state_dict=accelerator.get_state_dict(model),
+            safe_serialization=True,
+        )
         save_transformers_tokenizer(Path(args.tokenizer), final_model)
+
+
+if __name__ == "__main__":
+    main()
