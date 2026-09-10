@@ -48,6 +48,7 @@ def main() -> None:
     args = ap.parse_args()
 
     from accelerate import Accelerator, PartialState
+    from transformers import get_cosine_schedule_with_warmup
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
     report = json.loads(Path(args.dataset_report).read_text(encoding="utf-8"))
@@ -62,11 +63,14 @@ def main() -> None:
     dataset = TokenShardDataset(Path(args.data), "train", context, report["dtype"])
     loader = DataLoader(dataset, batch_size=micro_batch, num_workers=args.workers, pin_memory=torch.cuda.is_available())
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(train_cfg["learning_rate"]), weight_decay=float(train_cfg["weight_decay"]), betas=(0.9, 0.95))
-    model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
+    total_tokens = int(report["splits"]["train"]["tokens"] * float(train_cfg["epochs"]))
+    optimizer_steps = max(1, math.ceil(total_tokens / global_tokens))
+    warmup_steps = max(1, round(optimizer_steps * float(train_cfg["warmup_ratio"])))
+    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=optimizer_steps)
+    model, optimizer, loader, scheduler = accelerator.prepare(model, optimizer, loader, scheduler)
     if args.resume:
         accelerator.load_state(args.resume)
 
-    total_tokens = int(report["splits"]["train"]["tokens"] * float(train_cfg["epochs"]))
     seen_tokens = 0
     optimizer.zero_grad(set_to_none=True)
     out = Path(args.output)
@@ -79,11 +83,12 @@ def main() -> None:
             if accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(model.parameters(), float(train_cfg["gradient_clip"]))
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad(set_to_none=True)
         batch_tokens = int(batch["labels"].numel()) * accelerator.num_processes
         seen_tokens += batch_tokens
         if accelerator.is_main_process and step % 10 == 0:
-            print(json.dumps({"step": step, "loss": float(result.loss.detach()), "seen_tokens": seen_tokens, "target_tokens": total_tokens}), flush=True)
+            print(json.dumps({"step": step, "loss": float(result.loss.detach()), "lr": scheduler.get_last_lr()[0], "seen_tokens": seen_tokens, "target_tokens": total_tokens}), flush=True)
         if seen_tokens >= next_checkpoint:
             accelerator.save_state(out / f"tokens-{seen_tokens:015d}")
             next_checkpoint += int(train_cfg["checkpoint_tokens"])
