@@ -8,7 +8,12 @@ PROJECT_CONFIG="${3:-$ROOT/config/default.toml}"
 mkdir -p "$STATE"
 LC=("$VENV/bin/laplace-conventional" --project-config "$PROJECT_CONFIG")
 
-"${LC[@]}" inventory "$DATA_ROOT" --out "$STATE/corpus"
+# Account for the physical estate first, then apply explicit training admission.
+# Downstream stages consume only the selected manifest, while the physical
+# manifest and every inclusion/exclusion decision remain receipted.
+"${LC[@]}" inventory "$DATA_ROOT" --out "$STATE/inventory"
+"${LC[@]}" select --manifest "$STATE/inventory/manifest.jsonl" --out "$STATE/corpus"
+
 "$VENV/bin/python" - "$STATE/corpus/summary.json" "$PROJECT_CONFIG" <<'PY'
 import json, sys
 try:
@@ -25,7 +30,8 @@ if require and (unsupported or inaccessible):
     raise SystemExit(
         "configuration stopped before tokenizer/preparation: "
         f"unsupported_selected_bytes={unsupported}, inaccessible_selected_bytes={inaccessible}. "
-        "Inspect corpus/summary.json and manifest.jsonl; implement coverage/access or make an explicit project-config policy change."
+        "Inspect inventory/manifest.jsonl, corpus/decisions.jsonl, and corpus/summary.json; "
+        "implement a training provider, restore access, or make an explicit selection rule with a reason."
     )
 PY
 
