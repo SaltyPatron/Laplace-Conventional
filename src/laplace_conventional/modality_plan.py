@@ -7,7 +7,7 @@ from pathlib import Path
 from .corpus import ManifestEntry, load_manifest
 from .execution import derive_execution_plan, validate_execution_plan
 from .modality_models import build_provider_model, parameter_stats
-from .providers import provider_for
+from .providers import AUDIO, VIDEO, provider_for
 
 
 def _provider_entries(entries: list[ManifestEntry], provider_name: str) -> list[ManifestEntry]:
@@ -38,6 +38,10 @@ def plan_modalities(
     require_fit: bool = True,
 ) -> dict:
     result: dict[str, dict] = {}
+    video_cfg = dict(modality_settings.get("video", {})) if isinstance(modality_settings.get("video", {}), dict) else {}
+    video_audio = bool(video_cfg.get("enabled", False) and video_cfg.get("include_audio_track", False))
+    video_entries = _provider_entries(entries, VIDEO.name) if video_audio else []
+
     for modality in ("image", "audio", "video"):
         cfg = dict(modality_settings.get(modality, {}))
         if not cfg or not bool(cfg.get("enabled", False)):
@@ -45,14 +49,23 @@ def plan_modalities(
             continue
         provider_name = str(cfg["provider"])
         provider_entries = _provider_entries(entries, provider_name)
+        source_entries = provider_entries
+        source_breakdown: dict[str, int] = {"direct_files": len(provider_entries)}
+        if provider_name == AUDIO.name and video_audio:
+            # Audio training inspects every selected video container for an audio
+            # stream. Containers without audio are receipted and skipped later;
+            # containers with audio are routed through the same Wav2Vec2 objective.
+            source_entries = provider_entries + video_entries
+            source_breakdown["candidate_video_container_files"] = len(video_entries)
         item = {
             "enabled": True,
             "provider": provider_name,
-            "files": len(provider_entries),
-            "bytes": sum(e.size for e in provider_entries),
+            "files": len(source_entries),
+            "bytes": sum(e.size for e in source_entries),
+            "source_breakdown": source_breakdown,
             "config": cfg,
         }
-        if not provider_entries:
+        if not source_entries:
             item["present"] = False
             result[modality] = item
             continue
