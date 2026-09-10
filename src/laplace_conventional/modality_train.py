@@ -65,7 +65,7 @@ def _audio_pretraining_inputs(model, batch: dict, cfg: dict) -> dict:
         shape,
         mask_prob=float(cfg["mask_time_prob"]),
         mask_length=int(cfg["mask_time_length"]),
-        attention_mask=feature_attention.detach().cpu().numpy(),
+        attention_mask=feature_attention.detach().cpu(),
         min_masks=1,
     )
     negatives_np = _sample_negative_indices(
