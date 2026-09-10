@@ -96,11 +96,36 @@ def _ffmpeg_executable() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+def probe_audio_stream(path: Path) -> bool:
+    """Return whether a media container has a decodable first audio stream.
+
+    A legitimate no-audio container is False. Container/decoder failures are
+    errors and cannot be silently reclassified as "no audio".
+    """
+    cmd = [
+        _ffmpeg_executable(),
+        "-nostdin", "-v", "error", "-i", str(path),
+        "-map", "0:a:0", "-frames:a", "1", "-f", "null", "-",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+    if proc.returncode == 0:
+        return True
+    stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    no_stream_markers = (
+        "matches no streams",
+        "does not contain any stream",
+        "Stream map '0:a:0' matches no streams",
+    )
+    if any(marker in stderr for marker in no_stream_markers):
+        return False
+    raise RuntimeError(f"ffmpeg audio-stream probe failed for {path}: {stderr}")
+
+
 def _pcm_chunks(path: Path, *, sample_rate: int, chunk_samples: int) -> Iterator[np.ndarray]:
     cmd = [
         _ffmpeg_executable(),
         "-nostdin", "-v", "error", "-i", str(path),
-        "-vn", "-ac", "1", "-ar", str(sample_rate),
+        "-map", "0:a:0", "-vn", "-ac", "1", "-ar", str(sample_rate),
         "-f", "f32le", "pipe:1",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -182,7 +207,7 @@ class VideoClipDataset(IterableDataset):
                 last: torch.Tensor | None = None
                 for raw in reader:
                     array = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
-                    frame = image_to_tensor(Image.fromarray(array, mode="RGB"), self.image_size)
+                    frame = image_to_tensor(Image.fromarray(array), self.image_size)
                     last = frame
                     clip.append(frame)
                     if len(clip) == self.num_frames:
