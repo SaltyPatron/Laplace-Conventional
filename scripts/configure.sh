@@ -20,10 +20,12 @@ with open(sys.argv[2], "rb") as f:
     cfg = tomllib.load(f)
 require = bool(cfg.get("corpus", {}).get("require_full_coverage", True))
 unsupported = int(summary["unsupported_selected_bytes"])
-if require and unsupported:
+inaccessible = int(summary["inaccessible_selected_bytes"])
+if require and (unsupported or inaccessible):
     raise SystemExit(
-        f"configuration stopped before tokenizer/preparation: {unsupported} selected corpus bytes are unsupported. "
-        "Inspect corpus/summary.json; implement coverage or make an explicit policy change in the project config."
+        "configuration stopped before tokenizer/preparation: "
+        f"unsupported_selected_bytes={unsupported}, inaccessible_selected_bytes={inaccessible}. "
+        "Inspect corpus/summary.json and manifest.jsonl; implement coverage/access or make an explicit project-config policy change."
     )
 PY
 
