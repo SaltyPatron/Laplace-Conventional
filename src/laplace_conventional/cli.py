@@ -76,11 +76,10 @@ def main() -> None:
         for cfg in modalities_cfg.values()
         if isinstance(cfg, dict) and bool(cfg.get("enabled", False)) and cfg.get("provider")
     }
+    video_cfg = modalities_cfg.get("video", {}) if isinstance(modalities_cfg.get("video", {}), dict) else {}
+    require_video_audio_provider = bool(video_cfg.get("enabled", False) and video_cfg.get("include_audio_track", False))
 
     if args.command == "inventory":
-        # Physical inventory is independent from training selection. Dedupe is
-        # intentionally deferred until selection so an excluded copy cannot
-        # become the canonical target of a selected copy.
         entries, summary = build_manifest(Path(args.root), dedupe=False)
         write_manifest(entries, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -96,6 +95,7 @@ def main() -> None:
             rules,
             default_selected=bool(selection_cfg.get("default_selected", True)),
             enabled_providers=enabled_media_providers,
+            require_video_audio_provider=require_video_audio_provider,
         )
         write_selection(selected, decisions, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
