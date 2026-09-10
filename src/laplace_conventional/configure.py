@@ -18,17 +18,32 @@ def estimate_llama_params(vocab: int, layers: int, hidden: int, ffn: int) -> int
 
 
 def derive_shape(target_params: int, vocab: int) -> dict:
+    # Expand the candidate width until the deepest conventional candidate exceeds
+    # the measured target. This prevents a hidden fixed ceiling from silently turning
+    # a large corpus into the largest shape the source code happened to enumerate.
+    max_layers = 128
+    max_hidden = 256
+    while estimate_llama_params(vocab, max_layers, max_hidden, _ffn_dim(max_hidden)) < target_params * 1.25:
+        max_hidden += 128
     candidates = []
-    for hidden in range(256, 4097, 128):
+    for hidden in range(256, max_hidden + 1, 128):
         heads = max(1, hidden // 64)
         if hidden % heads:
             continue
         ffn = _ffn_dim(hidden)
-        for layers in range(4, 97, 2):
+        for layers in range(4, max_layers + 1, 2):
             params = estimate_llama_params(vocab, layers, hidden, ffn)
             candidates.append((abs(math.log(max(params, 1) / max(target_params, 1))), params, layers, hidden, heads, ffn))
     _, params, layers, hidden, heads, ffn = min(candidates)
-    return {"architecture": "llama", "parameter_estimate": params, "num_hidden_layers": layers, "hidden_size": hidden, "num_attention_heads": heads, "intermediate_size": ffn}
+    return {
+        "architecture": "llama",
+        "parameter_estimate": params,
+        "parameter_target_error": (params - target_params) / max(target_params, 1),
+        "num_hidden_layers": layers,
+        "hidden_size": hidden,
+        "num_attention_heads": heads,
+        "intermediate_size": ffn,
+    }
 
 
 def derive_training_config(dataset_report: dict, *, tokens_per_parameter: float = 20.0, context_quantile: str = "p95") -> dict:
