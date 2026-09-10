@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laplace-conventional"
+version = "0.1.0"
+description = "Conventional gradient-trained baseline over the Laplace corpus/substrate"
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.2,<4",
+]
+
+[project.scripts]
+laplace-conventional-train = "laplace_conventional.train:main"
+laplace-conventional-rl = "laplace_conventional.rl:main"
+laplace-conventional-eval = "laplace_conventional.eval:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

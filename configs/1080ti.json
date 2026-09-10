@@ -1,0 +1,5 @@
+{
+  "seed": 1337,
+  "model": {"max_seq_len": 1024, "n_layer": 12, "n_head": 12, "d_model": 768, "d_ff": 3072, "dropout": 0.0, "gradient_checkpointing": true},
+  "train": {"micro_batch_size": 1, "gradient_accumulation": 32, "learning_rate": 0.0003, "betas": [0.9, 0.95], "weight_decay": 0.1, "warmup_steps": 2000, "min_lr_ratio": 0.1, "max_steps": 200000, "graph_ratio": 0.5, "grad_clip": 1.0, "log_every": 10, "checkpoint_every": 1000, "output_dir": "/opt/laplace/conventional/checkpoints", "fused_adamw": false}
+}
