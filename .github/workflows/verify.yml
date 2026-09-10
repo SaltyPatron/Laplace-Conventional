@@ -19,7 +19,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[test]'
       - run: python -m compileall -q src tests
-      - run: pytest -q tests/test_corpus.py tests/test_configure.py tests/test_execution.py
+      - run: pytest -q tests/test_corpus.py tests/test_selection.py tests/test_configure.py tests/test_execution.py
 
   training-stack:
     runs-on: ubuntu-24.04
