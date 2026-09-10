@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import time
 from pathlib import Path
 
 import torch
@@ -123,10 +126,7 @@ def _mean_validation_loss(modality: str, model, loader, cfg: dict, accelerator) 
     return (total / count if count else None), count
 
 
-def _video_audio_entries(
-    root: Path,
-    candidates: list[ManifestEntry],
-) -> tuple[list[ManifestEntry], list[str]]:
+def _video_audio_entries(root: Path, candidates: list[ManifestEntry]) -> tuple[list[ManifestEntry], list[str]]:
     with_audio: list[ManifestEntry] = []
     without_audio: list[str] = []
     for entry in candidates:
@@ -146,16 +146,10 @@ def _resolved_entries(
     validation_per_10k: int,
 ) -> tuple[list[ManifestEntry], list[ManifestEntry], dict]:
     train_entries = provider_entries(
-        entries,
-        provider,
-        split="train",
-        validation_per_10k=validation_per_10k,
+        entries, provider, split="train", validation_per_10k=validation_per_10k
     )
     validation_entries = provider_entries(
-        entries,
-        provider,
-        split="validation",
-        validation_per_10k=validation_per_10k,
+        entries, provider, split="validation", validation_per_10k=validation_per_10k
     )
     receipt: dict = {
         "direct_training_files": len(train_entries),
@@ -175,16 +169,10 @@ def _resolved_entries(
         return train_entries, validation_entries, receipt
 
     candidate_train = provider_entries(
-        entries,
-        VIDEO.name,
-        split="train",
-        validation_per_10k=validation_per_10k,
+        entries, VIDEO.name, split="train", validation_per_10k=validation_per_10k
     )
     candidate_validation = provider_entries(
-        entries,
-        VIDEO.name,
-        split="validation",
-        validation_per_10k=validation_per_10k,
+        entries, VIDEO.name, split="validation", validation_per_10k=validation_per_10k
     )
     video_train, no_audio_train = _video_audio_entries(root, candidate_train)
     video_validation, no_audio_validation = _video_audio_entries(root, candidate_validation)
@@ -200,6 +188,18 @@ def _resolved_entries(
     return train_entries + video_train, validation_entries + video_validation, receipt
 
 
+def _fingerprint(value: dict) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _write_progress(path: Path, progress: dict) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    tmp = path / "progress.json.tmp"
+    tmp.write_text(json.dumps(progress, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path / "progress.json")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train a selected conventional self-supervised modality provider.")
     ap.add_argument("--modality", choices=["image", "audio", "video"], required=True)
@@ -209,6 +209,7 @@ def main() -> None:
     ap.add_argument("--output", required=True)
     ap.add_argument("--validation-per-10k", type=int, default=100)
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--resume")
     args = ap.parse_args()
 
     whole_plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -230,15 +231,12 @@ def main() -> None:
     root = Path(args.root)
     entries = load_manifest(Path(args.manifest))
     train_entries, validation_entries, source_receipt = _resolved_entries(
-        args.modality,
-        root,
-        entries,
-        provider,
-        whole_plan,
-        args.validation_per_10k,
+        args.modality, root, entries, provider, whole_plan, args.validation_per_10k
     )
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
+    plan_fingerprint = _fingerprint(item)
+    source_fingerprint = _fingerprint(source_receipt)
     if accelerator.is_main_process:
         (out / "source-receipt.json").write_text(
             json.dumps(source_receipt, indent=2, sort_keys=True), encoding="utf-8"
@@ -246,8 +244,6 @@ def main() -> None:
 
     if not train_entries:
         if args.modality == "audio" and not validation_entries and source_receipt.get("video_audio_enabled"):
-            # Candidate video containers were explicitly probed and none contains
-            # an audio stream; there is no audio objective to execute for them.
             if accelerator.is_main_process:
                 (out / "training-receipt.json").write_text(json.dumps({
                     "modality": "audio",
@@ -288,15 +284,43 @@ def main() -> None:
 
     epochs = float(cfg.get("epochs", 1.0))
     if epochs <= 0 or not epochs.is_integer():
-        raise ValueError("modality epochs must currently be a positive whole number to guarantee complete passes")
+        raise ValueError("modality epochs must be a positive whole number to guarantee complete passes")
+    epochs_int = int(epochs)
+    checkpoint_seconds = max(60.0, float(cfg.get("checkpoint_minutes", 30.0)) * 60.0)
+    start_epoch = 0
+    batch_in_epoch = 0
     total_batches = 0
     total_examples = 0
-    last_loss: float | None = None
 
+    if args.resume:
+        resume = Path(args.resume)
+        progress_file = resume / "progress.json"
+        if not progress_file.exists():
+            raise FileNotFoundError(f"resume checkpoint lacks {progress_file}")
+        progress = json.loads(progress_file.read_text(encoding="utf-8"))
+        if progress.get("provider") != provider:
+            raise RuntimeError("resume provider differs from current modality plan")
+        if progress.get("plan_fingerprint") != plan_fingerprint:
+            raise RuntimeError("resume execution/model plan differs from current generated plan")
+        if progress.get("source_fingerprint") != source_fingerprint:
+            raise RuntimeError("resume source set differs from current selected corpus")
+        accelerator.load_state(resume)
+        start_epoch = int(progress["epoch"])
+        batch_in_epoch = int(progress["batch_in_epoch"])
+        total_batches = int(progress["total_batches"])
+        total_examples = int(progress["total_examples"])
+        if start_epoch >= epochs_int:
+            return
+
+    last_loss: float | None = None
+    next_checkpoint_at = time.monotonic() + checkpoint_seconds
     model.train()
-    for epoch in range(int(epochs)):
-        epoch_batches = 0
-        for batch in train_loader:
+    for epoch in range(start_epoch, epochs_int):
+        epoch_batches = batch_in_epoch if epoch == start_epoch else 0
+        active_loader = train_loader
+        if epoch == start_epoch and batch_in_epoch:
+            active_loader = accelerator.skip_first_batches(train_loader, batch_in_epoch)
+        for batch in active_loader:
             with accelerator.accumulate(model):
                 result = _forward(args.modality, model, batch, cfg)
                 accelerator.backward(result.loss)
@@ -319,6 +343,22 @@ def main() -> None:
                     "loss": last_loss,
                     "backend": execution["backend"],
                 }), flush=True)
+            if accelerator.sync_gradients and time.monotonic() >= next_checkpoint_at:
+                checkpoint = out / "checkpoints" / f"epoch-{epoch:03d}-batch-{epoch_batches:09d}"
+                accelerator.save_state(checkpoint)
+                if accelerator.is_main_process:
+                    progress = {
+                        "provider": provider,
+                        "plan_fingerprint": plan_fingerprint,
+                        "source_fingerprint": source_fingerprint,
+                        "epoch": epoch,
+                        "batch_in_epoch": epoch_batches,
+                        "total_batches": total_batches,
+                        "total_examples": total_examples,
+                    }
+                    _write_progress(checkpoint, progress)
+                    (out / "latest-checkpoint.txt").write_text(str(checkpoint), encoding="utf-8")
+                next_checkpoint_at = time.monotonic() + checkpoint_seconds
         if epoch_batches == 0:
             raise RuntimeError(f"{provider} training dataset produced no batches")
         validation_loss, validation_batches = (None, 0)
@@ -336,11 +376,21 @@ def main() -> None:
                 "validation_loss": validation_loss,
                 "validation_batches": validation_batches,
             }), flush=True)
+        batch_in_epoch = 0
 
     accelerator.wait_for_everyone()
     state = out / "final-state"
     accelerator.save_state(state)
     if accelerator.is_main_process:
+        _write_progress(state, {
+            "provider": provider,
+            "plan_fingerprint": plan_fingerprint,
+            "source_fingerprint": source_fingerprint,
+            "epoch": epochs_int,
+            "batch_in_epoch": 0,
+            "total_batches": total_batches,
+            "total_examples": total_examples,
+        })
         final_model = out / "final-model"
         final_model.mkdir(parents=True, exist_ok=True)
         unwrapped = accelerator.unwrap_model(model)
@@ -354,7 +404,7 @@ def main() -> None:
             "provider": provider,
             "training_files": len(train_entries),
             "validation_files": len(validation_entries),
-            "epochs": int(epochs),
+            "epochs": epochs_int,
             "batches": total_batches,
             "examples": total_examples,
             "last_loss": last_loss,
