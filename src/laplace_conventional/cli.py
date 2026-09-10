@@ -48,9 +48,11 @@ def main() -> None:
     derivation_cfg = section(settings, "derivation")
     training_cfg = section(settings, "training")
     execution_cfg = section(settings, "execution")
+    validation_per_10k = int(corpus_cfg.get("validation_per_10k", 100))
+    max_chars = int(records_cfg.get("max_chars", 64_000))
 
     if args.command == "inventory":
-        entries, summary = build_manifest(Path(args.root), hash_duplicates=bool(corpus_cfg.get("dedupe", True)))
+        entries, summary = build_manifest(Path(args.root), dedupe=bool(corpus_cfg.get("dedupe", True)))
         write_manifest(entries, summary, Path(args.out))
         print(json.dumps(summary, indent=2, sort_keys=True))
         return
@@ -58,16 +60,28 @@ def main() -> None:
     if args.command == "tokenizer":
         root = Path(args.root)
         entries = load_manifest(Path(args.manifest))
-        max_chars = int(records_cfg.get("max_chars", 64_000))
         def factory():
             return iter_trainable_records(root, entries, max_chars=max_chars)
         candidates = [int(x) for x in tokenizer_cfg.get("vocab_candidates", [])]
-        print(json.dumps(choose_tokenizer(factory, Path(args.out), candidates), indent=2, sort_keys=True))
+        print(json.dumps(choose_tokenizer(
+            factory,
+            Path(args.out),
+            candidates,
+            validation_per_10k=validation_per_10k,
+        ), indent=2, sort_keys=True))
         return
 
     if args.command == "prepare":
         shard_bytes = int(args.shard_bytes or execution_cfg.get("shard_bytes", 512 << 20))
-        print(json.dumps(prepare(Path(args.root), Path(args.manifest), Path(args.tokenizer), Path(args.out), shard_bytes=shard_bytes), indent=2, sort_keys=True))
+        print(json.dumps(prepare(
+            Path(args.root),
+            Path(args.manifest),
+            Path(args.tokenizer),
+            Path(args.out),
+            shard_bytes=shard_bytes,
+            validation_per_10k=validation_per_10k,
+            max_chars=max_chars,
+        ), indent=2, sort_keys=True))
         return
 
     if args.command == "derive-config":

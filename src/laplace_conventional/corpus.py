@@ -101,7 +101,7 @@ def classify(path: Path) -> tuple[str, str, bool, bool | None]:
     return "binary", suffix[1:] or "binary", False, False
 
 
-def build_manifest(root: Path, *, hash_duplicates: bool = True) -> tuple[list[ManifestEntry], dict]:
+def build_manifest(root: Path, *, dedupe: bool = True) -> tuple[list[ManifestEntry], dict]:
     root = root.resolve()
     if not root.is_dir():
         raise FileNotFoundError(root)
@@ -111,9 +111,9 @@ def build_manifest(root: Path, *, hash_duplicates: bool = True) -> tuple[list[Ma
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         rel = path.relative_to(root).as_posix()
         source = rel.split("/", 1)[0]
-        digest = _sha256(path) if hash_duplicates else ""
-        duplicate_of = first_by_hash.get(digest) if digest else None
-        if digest and duplicate_of is None:
+        digest = _sha256(path)
+        duplicate_of = first_by_hash.get(digest) if dedupe else None
+        if digest not in first_by_hash:
             first_by_hash[digest] = rel
         kind, fmt, trainable, utf8 = classify(path)
         entry = ManifestEntry(
@@ -122,35 +122,36 @@ def build_manifest(root: Path, *, hash_duplicates: bool = True) -> tuple[list[Ma
             duplicate_of=duplicate_of, utf8=utf8,
         )
         entries.append(entry)
-        t = totals.setdefault(kind, {"files": 0, "bytes": 0, "unique_files": 0, "unique_bytes": 0})
+        t = totals.setdefault(kind, {"files": 0, "bytes": 0, "selected_files": 0, "selected_bytes": 0})
         t["files"] += 1
         t["bytes"] += entry.size
         if duplicate_of is None:
-            t["unique_files"] += 1
-            t["unique_bytes"] += entry.size
+            t["selected_files"] += 1
+            t["selected_bytes"] += entry.size
     unsupported_bytes = sum(e.size for e in entries if not e.trainable and e.duplicate_of is None)
     summary = {
         "root": str(root),
+        "dedupe": dedupe,
         "files": len(entries),
         "bytes": sum(e.size for e in entries),
-        "unique_files": sum(1 for e in entries if e.duplicate_of is None),
-        "unique_bytes": sum(e.size for e in entries if e.duplicate_of is None),
+        "selected_files": sum(1 for e in entries if e.duplicate_of is None),
+        "selected_bytes": sum(e.size for e in entries if e.duplicate_of is None),
         "duplicate_files": sum(1 for e in entries if e.duplicate_of is not None),
-        "trainable_unique_bytes": sum(e.size for e in entries if e.trainable and e.duplicate_of is None),
-        "unsupported_unique_bytes": unsupported_bytes,
+        "trainable_selected_bytes": sum(e.size for e in entries if e.trainable and e.duplicate_of is None),
+        "unsupported_selected_bytes": unsupported_bytes,
         "coverage_complete": unsupported_bytes == 0,
         "kinds": totals,
         "sources": {},
     }
     for e in entries:
-        s = summary["sources"].setdefault(e.source, {"files": 0, "bytes": 0, "trainable_bytes": 0, "unsupported_bytes": 0})
+        s = summary["sources"].setdefault(e.source, {"files": 0, "bytes": 0, "trainable_selected_bytes": 0, "unsupported_selected_bytes": 0})
         s["files"] += 1
         s["bytes"] += e.size
         if e.duplicate_of is None:
             if e.trainable:
-                s["trainable_bytes"] += e.size
+                s["trainable_selected_bytes"] += e.size
             else:
-                s["unsupported_bytes"] += e.size
+                s["unsupported_selected_bytes"] += e.size
     return entries, summary
 
 
@@ -171,7 +172,7 @@ def _read_utf8(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _chunk_text(text: str, max_chars: int = 64_000) -> Iterator[str]:
+def _chunk_text(text: str, max_chars: int) -> Iterator[str]:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     start = 0
     while start < len(text):
@@ -193,24 +194,30 @@ def _canonical_json(value) -> str:
 
 
 def iter_records(root: Path, entry: ManifestEntry, *, max_chars: int = 64_000) -> Iterator[Record]:
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive")
     if not entry.trainable or entry.duplicate_of is not None:
         return
     path = root / entry.path
     idx = 0
+
+    def emit(text: str) -> Iterator[Record]:
+        nonlocal idx
+        for chunk in _chunk_text(text, max_chars):
+            yield Record(entry.path, entry.source, idx, entry.format, chunk)
+            idx += 1
+
     if entry.format == "jsonl":
         with path.open("r", encoding="utf-8") as f:
             for line in f:
-                if not line.strip():
-                    continue
-                yield Record(entry.path, entry.source, idx, entry.format, _canonical_json(json.loads(line)))
-                idx += 1
+                if line.strip():
+                    yield from emit(_canonical_json(json.loads(line)))
         return
     if entry.format == "json":
         value = json.loads(_read_utf8(path))
         values = value if isinstance(value, list) else [value]
         for item in values:
-            yield Record(entry.path, entry.source, idx, entry.format, _canonical_json(item))
-            idx += 1
+            yield from emit(_canonical_json(item))
         return
     if entry.format in {"csv", "tsv"}:
         delimiter = "," if entry.format == "csv" else "\t"
@@ -218,13 +225,11 @@ def iter_records(root: Path, entry: ManifestEntry, *, max_chars: int = 64_000) -
             reader = csv.DictReader(f, delimiter=delimiter)
             if reader.fieldnames:
                 for row in reader:
-                    yield Record(entry.path, entry.source, idx, entry.format, _canonical_json(row))
-                    idx += 1
+                    yield from emit(_canonical_json(row))
             else:
                 f.seek(0)
                 for row in csv.reader(f, delimiter=delimiter):
-                    yield Record(entry.path, entry.source, idx, entry.format, _canonical_json(row))
-                    idx += 1
+                    yield from emit(_canonical_json(row))
         return
     if entry.format == "xml":
         depth = 0
@@ -233,10 +238,7 @@ def iter_records(root: Path, entry: ManifestEntry, *, max_chars: int = 64_000) -
                 depth += 1
                 continue
             if depth == 2:
-                text = ET.tostring(elem, encoding="unicode")
-                if text.strip():
-                    yield Record(entry.path, entry.source, idx, entry.format, text)
-                    idx += 1
+                yield from emit(ET.tostring(elem, encoding="unicode"))
                 elem.clear()
             depth -= 1
         return
@@ -247,15 +249,12 @@ def iter_records(root: Path, entry: ManifestEntry, *, max_chars: int = 64_000) -
                 if line.strip():
                     buf.append(line.rstrip("\n"))
                 elif buf:
-                    yield Record(entry.path, entry.source, idx, entry.format, "\n".join(buf))
-                    idx += 1
+                    yield from emit("\n".join(buf))
                     buf.clear()
         if buf:
-            yield Record(entry.path, entry.source, idx, entry.format, "\n".join(buf))
+            yield from emit("\n".join(buf))
         return
-    for chunk in _chunk_text(_read_utf8(path), max_chars=max_chars):
-        yield Record(entry.path, entry.source, idx, entry.format, chunk)
-        idx += 1
+    yield from emit(_read_utf8(path))
 
 
 def iter_trainable_records(root: Path, entries: Iterable[ManifestEntry], *, max_chars: int = 64_000) -> Iterator[Record]:

@@ -19,6 +19,10 @@ def build_model(config_path: Path):
         max_position_embeddings=cfg["max_position_embeddings"],
         rms_norm_eps=cfg["rms_norm_eps"],
         rope_theta=cfg["rope_theta"],
+        bos_token_id=1,
+        eos_token_id=2,
+        pad_token_id=3,
         tie_word_embeddings=True,
+        use_cache=False,
     )
     return LlamaForCausalLM(hf_cfg)
