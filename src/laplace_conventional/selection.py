@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .corpus import ManifestEntry, write_manifest
+from .providers import provider_for, provider_summary
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ def apply_selection(
         selected_entries.append(replace(entry, duplicate_of=duplicate_of))
 
     unique_selected = [e for e in selected_entries if e.duplicate_of is None]
-    unsupported = sum(e.size for e in unique_selected if e.accessible and not e.trainable)
+    unsupported = sum(e.size for e in unique_selected if e.accessible and provider_for(e) is None)
     inaccessible = sum(e.size for e in unique_selected if not e.accessible)
     selected_bytes = sum(e.size for e in unique_selected)
 
@@ -86,11 +87,12 @@ def apply_selection(
         "selected_duplicate_files": sum(1 for e in selected_entries if e.duplicate_of is not None),
         "excluded_files": sum(1 for d in decisions if not d.selected),
         "excluded_bytes": sum(e.size for e in physical if not decision_by_path[e.path].selected),
-        "trainable_selected_bytes": sum(e.size for e in unique_selected if e.accessible and e.trainable),
+        "trainable_selected_bytes": sum(e.size for e in unique_selected if provider_for(e) is not None),
         "unsupported_selected_bytes": unsupported,
         "inaccessible_selected_files": sum(1 for e in unique_selected if not e.accessible),
         "inaccessible_selected_bytes": inaccessible,
         "coverage_complete": unsupported == 0 and inaccessible == 0,
+        "providers": provider_summary(unique_selected),
         "exclusion_reasons": reason_counts,
     }
     return selected_entries, decisions, summary
