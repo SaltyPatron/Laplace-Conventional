@@ -9,13 +9,12 @@ mkdir -p "$STATE"
 LC=("$VENV/bin/laplace-conventional" --project-config "$PROJECT_CONFIG")
 
 "${LC[@]}" inventory "$DATA_ROOT" --out "$STATE/corpus"
-"${LC[@]}" tokenizer "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --out "$STATE/tokenizer"
-"${LC[@]}" prepare "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --tokenizer "$STATE/tokenizer/tokenizer.model" --out "$STATE/data"
-"${LC[@]}" derive-config --dataset-report "$STATE/data/dataset-report.json" --out "$STATE/training.json"
-"${LC[@]}" hardware --out "$STATE/hardware.json"
-
 "$VENV/bin/python" - "$STATE/corpus/summary.json" "$PROJECT_CONFIG" <<'PY'
-import json, sys, tomllib
+import json, sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 summary = json.load(open(sys.argv[1], encoding="utf-8"))
 with open(sys.argv[2], "rb") as f:
     cfg = tomllib.load(f)
@@ -23,9 +22,14 @@ require = bool(cfg.get("corpus", {}).get("require_full_coverage", True))
 unsupported = int(summary["unsupported_selected_bytes"])
 if require and unsupported:
     raise SystemExit(
-        f"configuration stopped: {unsupported} selected corpus bytes are unsupported. "
+        f"configuration stopped before tokenizer/preparation: {unsupported} selected corpus bytes are unsupported. "
         "Inspect corpus/summary.json; implement coverage or make an explicit policy change in the project config."
     )
 PY
+
+"${LC[@]}" tokenizer "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --out "$STATE/tokenizer"
+"${LC[@]}" prepare "$DATA_ROOT" --manifest "$STATE/corpus/manifest.jsonl" --tokenizer "$STATE/tokenizer/tokenizer.model" --out "$STATE/data"
+"${LC[@]}" derive-config --dataset-report "$STATE/data/dataset-report.json" --out "$STATE/training.json"
+"${LC[@]}" hardware --out "$STATE/hardware.json"
 
 echo "configuration complete: $STATE"
