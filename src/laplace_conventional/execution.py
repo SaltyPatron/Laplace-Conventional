@@ -38,6 +38,9 @@ def _model_parameter_count(model_cfg: dict) -> int:
 
 
 def _largest_layer_parameters(model_cfg: dict) -> int:
+    value = int(model_cfg.get("largest_layer_parameter_estimate", 0))
+    if value > 0:
+        return value
     vocab = int(model_cfg["vocab_size"])
     hidden = int(model_cfg["hidden_size"])
     ffn = int(model_cfg["intermediate_size"])
