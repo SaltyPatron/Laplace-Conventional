@@ -16,19 +16,17 @@ dependencies = [
 
 [project.optional-dependencies]
 train = [
-  "transformers>=5.17,<6",
-  "accelerate>=1.15,<2",
-  "safetensors>=0.5,<1",
+  "transformers==5.17.0",
+  "accelerate==1.15.0",
+  "safetensors==0.8.0",
 ]
 media = [
-  "pillow>=12.3,<13",
-  "soundfile>=0.14,<0.15",
-  "scipy>=1.15,<2",
-  "imageio-ffmpeg>=0.6,<1",
+  "pillow==12.3.0",
+  "imageio-ffmpeg==0.6.0",
 ]
 rl = [
-  "datasets>=5.0,<6",
-  "trl>=1.13,<2",
+  "datasets==5.0.1",
+  "trl==1.13.0",
 ]
 offload = [
   "deepspeed==0.19.6",
