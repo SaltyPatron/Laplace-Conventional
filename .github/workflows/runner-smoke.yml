@@ -1,0 +1,30 @@
+name: runner-smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: [self-hosted, Linux, X64, laplace-conventional, gpu, pascal, 1080ti]
+    timeout-minutes: 5
+    steps:
+      - name: Verify actual runner identity, storage, and GPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -un)" = laplace-runner
+          test "$(id -gn)" = laplace-runner
+          test "$(umask)" = 0002
+          mountpoint -q /build
+          case "$GITHUB_WORKSPACE" in /build/laplace/work/conventional-runner/*) ;; *) exit 1 ;; esac
+          test "$TMPDIR" = /build/laplace/work/conventional-scratch
+          test "$TMP" = "$TMPDIR"
+          test "$TEMP" = "$TMPDIR"
+          probe=$(mktemp -d "$TMPDIR/runner-proof.XXXXXXXX")
+          trap 'rm -rf -- "$probe"' EXIT
+          chmod 2770 "$probe"
+          printf 'runner storage proof\n' > "$probe/output"
+          test "$(stat -c %G "$probe/output")" = laplace-runner
+          test "$(stat -c %a "$probe/output")" = 664
+          nvidia-smi --query-gpu=name --format=csv,noheader
+          echo 'PASS: conventional runner identity, group write, build storage, and GPU'

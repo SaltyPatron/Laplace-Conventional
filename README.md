@@ -74,3 +74,20 @@ python -m laplace_conventional.rl \
 ```
 
 A reward must come from an actual verifier, environment outcome, preference/reward model, executable test, game result, or other explicitly selected signal. The repository will not relabel next-token or exact-string matching as reinforcement learning.
+
+## Self-hosted runner on hart-server
+
+```bash
+sudo bash scripts/install-runner.sh
+```
+
+The installer uses the invoking operator's GitHub login to register a separate
+`hart-server-conventional` runner as `laplace-runner:laplace-runner`. Its service
+uses `UMask=0002`, its checkout is under `/build/laplace/work/conventional-runner`,
+and all three temporary-directory variables point at
+`/build/laplace/work/conventional-scratch`. The runner distribution is SHA-256
+verified. Repeating setup retains the matching registration and repairs the
+service configuration; registrations belonging to another repository are rejected.
+
+Run the `runner-smoke` workflow to prove identity, group write, storage, and GPU
+access without starting training.
