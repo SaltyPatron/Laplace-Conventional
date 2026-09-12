@@ -43,7 +43,11 @@ nvidia-smi --query-gpu=name --format=csv,noheader | grep -q 'GTX 1080 Ti'
 # Fetch only the upstream distribution, never another runner's registration or credentials.
 archive="$SCRATCH_ROOT/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
 if [[ ! -x "$RUNNER_ROOT/config.sh" ]]; then
-  curl --fail --location --retry 3 "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" -o "$archive"
+  if ! printf '%s  %s\n' "$RUNNER_SHA256" "$archive" | sha256sum --check --status 2>/dev/null; then
+    curl --fail --location --retry 3 "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" -o "$archive.download"
+    printf '%s  %s\n' "$RUNNER_SHA256" "$archive.download" | sha256sum --check --status
+    mv "$archive.download" "$archive"
+  fi
   printf '%s  %s\n' "$RUNNER_SHA256" "$archive" | sha256sum --check --status
   runuser -u "$RUNNER_USER" -- tar -xzf "$archive" -C "$RUNNER_ROOT"
 fi
