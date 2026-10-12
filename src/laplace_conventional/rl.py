@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 from pathlib import Path
+from .host_policy import gpu_allowed
 
 
 def load_callable(spec: str):
@@ -39,7 +40,8 @@ def main() -> None:
         model=args.model,
         reward_funcs=reward,
         train_dataset=ds,
-        args=GRPOConfig(output_dir=args.output, max_steps=args.max_steps, report_to="none"),
+        args=GRPOConfig(output_dir=args.output, max_steps=args.max_steps, report_to="none",
+                        use_cpu=not gpu_allowed()),
     )
     trainer.train()
     trainer.save_model(args.output)

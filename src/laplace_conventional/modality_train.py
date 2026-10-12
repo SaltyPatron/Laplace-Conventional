@@ -22,6 +22,7 @@ from .modality_data import (
 from .modality_models import build_provider_model
 from .providers import AUDIO, VIDEO
 from .runtime import accelerator_for_plan
+from .host_policy import gpu_allowed
 
 
 def _video_mask(batch_size: int, cfg: dict, device: torch.device) -> torch.Tensor:
@@ -260,13 +261,13 @@ def main() -> None:
         _dataset(args.modality, root, train_entries, cfg),
         batch_size=micro_batch,
         num_workers=args.workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=gpu_allowed() and torch.cuda.is_available(),
     )
     validation_loader = DataLoader(
         _dataset(args.modality, root, validation_entries, cfg),
         batch_size=micro_batch,
         num_workers=args.workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=gpu_allowed() and torch.cuda.is_available(),
     ) if validation_entries else None
 
     optimizer = torch.optim.AdamW(

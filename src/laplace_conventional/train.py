@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader, IterableDataset
 from .execution import validate_execution_plan
 from .model import build_model
 from .tokenizer_io import save_transformers_tokenizer
+from .host_policy import gpu_allowed
+from .runtime import accelerator_for_plan
 
 
 class TokenShardDataset(IterableDataset):
@@ -76,44 +78,12 @@ def _raw_loader(dataset: TokenShardDataset, micro_batch: int, workers: int) -> D
         dataset,
         batch_size=micro_batch,
         num_workers=workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=gpu_allowed() and torch.cuda.is_available(),
     )
 
 
 def _accelerator(plan: dict, grad_accum: int, gradient_clip: float):
-    from accelerate import Accelerator
-
-    precision = str(plan["precision"])
-    mixed_precision = {"fp32": "no", "fp16": "fp16", "bf16": "bf16"}[precision]
-    backend = str(plan["backend"])
-    if backend == "native":
-        return Accelerator(
-            gradient_accumulation_steps=grad_accum,
-            mixed_precision=mixed_precision,
-        )
-    if backend == "deepspeed_zero3_cpu_offload":
-        try:
-            from accelerate import DeepSpeedPlugin
-            import deepspeed  # noqa: F401 -- fail before allocating the model if missing
-        except ImportError as exc:
-            raise RuntimeError(
-                "execution plan requires DeepSpeed ZeRO-3 CPU offload; run scripts/setup.sh with offload support"
-            ) from exc
-        plugin = DeepSpeedPlugin(
-            zero_stage=3,
-            offload_optimizer_device="cpu",
-            offload_param_device="cpu",
-            zero3_init_flag=True,
-            zero3_save_16bit_model=precision != "fp32",
-            gradient_accumulation_steps=grad_accum,
-            gradient_clipping=gradient_clip,
-        )
-        return Accelerator(
-            gradient_accumulation_steps=grad_accum,
-            mixed_precision=mixed_precision,
-            deepspeed_plugin=plugin,
-        )
-    raise RuntimeError(f"unsupported execution backend: {backend}")
+    return accelerator_for_plan(plan, gradient_accumulation_steps=grad_accum, gradient_clip=gradient_clip)
 
 
 def main() -> None:

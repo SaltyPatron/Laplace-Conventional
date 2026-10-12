@@ -5,7 +5,8 @@ VENV="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}"
 PYTHON="${PYTHON:-python3}"
 TORCH_VERSION="${TORCH_VERSION:-2.14.0}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
-INSTALL_OFFLOAD="${INSTALL_OFFLOAD:-1}"
+INSTALL_OFFLOAD="${INSTALL_OFFLOAD:-0}"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 command -v "$PYTHON" >/dev/null || { echo "python3 is required" >&2; exit 2; }
 "$PYTHON" - <<'PY'
@@ -18,15 +19,13 @@ PY
 "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel
 
 if [[ -z "$TORCH_INDEX_URL" ]]; then
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    gpu="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)"
-    case "$gpu" in
-      *"1080 Ti"*|*"GTX 10"*|*"P100"*|*"P40"*|*"P4"*) TORCH_INDEX_URL="https://download.pytorch.org/whl/cu126" ;;
-      *) TORCH_INDEX_URL="https://download.pytorch.org/whl/cu126" ;;
-    esac
-  else
-    TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
+  TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
+  if "$VENV/bin/python" -c 'from laplace_conventional.host_policy import gpu_allowed; raise SystemExit(0 if gpu_allowed() else 1)'; then
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/cu126"
   fi
+fi
+if [[ "$INSTALL_OFFLOAD" != 0 || "$TORCH_INDEX_URL" != https://download.pytorch.org/whl/cpu ]]; then
+  "$VENV/bin/python" -m laplace_conventional.host_policy --require
 fi
 
 "$VENV/bin/python" -m pip install "torch==$TORCH_VERSION" --index-url "$TORCH_INDEX_URL"
@@ -40,14 +39,16 @@ fi
 import json, sys, torch
 import imageio_ffmpeg
 from PIL import Image
+from laplace_conventional.host_policy import gpu_allowed
 info={
     "python":sys.version.split()[0],
     "torch":torch.__version__,
-    "cuda_available":torch.cuda.is_available(),
+    "gpu_allowed":gpu_allowed(),
+    "cuda_available":gpu_allowed() and torch.cuda.is_available(),
     "ffmpeg":imageio_ffmpeg.get_ffmpeg_exe(),
     "pillow":Image.__version__,
 }
-if torch.cuda.is_available():
+if info["cuda_available"]:
     info["gpu"]=torch.cuda.get_device_name(0)
     info["compute_capability"]=torch.cuda.get_device_capability(0)
     info["gpu_memory_bytes"]=torch.cuda.get_device_properties(0).total_memory
