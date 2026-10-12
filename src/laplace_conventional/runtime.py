@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from .host_policy import gpu_allowed, require_gpu_host
+
 
 def accelerator_for_plan(plan: dict, *, gradient_accumulation_steps: int, gradient_clip: float):
+    if int(plan.get("gpu_total_bytes", 0)) > 0 or plan["backend"] == "deepspeed_zero3_cpu_offload":
+        require_gpu_host()
     from accelerate import Accelerator
 
     precision = str(plan["precision"])
@@ -9,6 +13,7 @@ def accelerator_for_plan(plan: dict, *, gradient_accumulation_steps: int, gradie
     backend = str(plan["backend"])
     if backend == "native":
         return Accelerator(
+            cpu=not gpu_allowed(),
             gradient_accumulation_steps=gradient_accumulation_steps,
             mixed_precision=mixed_precision,
         )

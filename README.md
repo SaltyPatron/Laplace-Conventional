@@ -24,7 +24,9 @@ The repository keeps the following boundaries independently inspectable:
 
 `configure.sh` deliberately stops if admitted unique corpus bytes have no enabled training provider, if files are inaccessible, or if an exact configured/generated model cannot be executed under either native-GPU or configured ZeRO-3 CPU-offload budgets. A selected PDF/archive/tablebase/other opaque binary therefore remains a failed coverage boundary until a provider is implemented or the project configuration explicitly excludes it with a reason.
 
-For the GTX 1080 Ti, setup defaults to the PyTorch 2.14 CUDA 12.6 wheel line. Setup also installs the media decode stack and DeepSpeed 0.19.6 by default. It does not use GPU fit as permission to change model scope.
+GPU access requires `LAPLACE_GPU_HOST` to explicitly match the current machine's short hostname, ignoring case. Leave it unset on CPU-only hosts. HART-DESKTOP is the designated GPU host; hart-server's GTX 1080 Ti is prohibited, including hardware probes. Detection never grants eligibility. Hardware inventory returns CPU/RAM information without importing Torch when GPU access is disabled, and GPU execution plans are rejected before accelerator initialization on an ineligible host.
+
+Setup defaults to CPU wheels on an ineligible host, and to the configured PyTorch CUDA wheel line on an eligible host. DeepSpeed is opt-in (`INSTALL_OFFLOAD=1`) and requires GPU authorization because CPU offload still executes on a GPU. Neither host policy nor available memory changes model scope. The current shell installer and GPU training workflow require Linux; native Windows Conventional training installation remains to be implemented. This restriction does not apply to the separately installed Windows Lc0 engine.
 
 ## Generated state
 
@@ -75,19 +77,23 @@ python -m laplace_conventional.rl \
 
 A reward must come from an actual verifier, environment outcome, preference/reward model, executable test, game result, or other explicitly selected signal. The repository will not relabel next-token or exact-string matching as reinforcement learning.
 
-## Self-hosted runner on hart-server
+## Linux self-hosted runner
 
 ```bash
-sudo bash scripts/install-runner.sh
+sudo env LAPLACE_CONVENTIONAL_RUNNER_ROOT=/selected/runner \
+  LAPLACE_CONVENTIONAL_RUNNER_WORK=/selected/work \
+  LAPLACE_CONVENTIONAL_RUNNER_SCRATCH=/selected/scratch \
+  bash scripts/install-runner.sh
 ```
 
-The installer uses the invoking operator's GitHub login to register a separate
-`hart-server-conventional` runner as `laplace-runner:laplace-runner`. Its service
-uses `UMask=0002`, its checkout is under `/build/laplace/work/conventional-runner`,
-and all three temporary-directory variables point at
-`/build/laplace/work/conventional-scratch`. The runner distribution is SHA-256
-verified. Repeating setup retains the matching registration and repairs the
-service configuration; registrations belonging to another repository are rejected.
+Replace the three paths with the existing installation's configured directories; they do not need to be mountpoints.
+The installer uses the invoking operator's GitHub login and names the runner `<hostname>-Laplace-Conventional`
+(override with `LAPLACE_CONVENTIONAL_RUNNER_NAME`). It runs as `laplace-runner:laplace-runner`, uses `UMask=0002`,
+and gives all three temporary-directory variables the selected scratch path. The runner distribution is SHA-256
+verified. An existing registration must match the selected repo, name and work directory.
+CPU runners carry `laplace-conventional`. Only a matching `LAPLACE_GPU_HOST` declaration adds `laplace-gpu` and
+persists that authorization in the service environment. GPU workflows also recheck the declaration before probing hardware.
+Use the already installed runner where available; do not install a second runner to change its labels.
 
-Run the `runner-smoke` workflow to prove identity, group write, storage, and GPU
-access without starting training.
+`runner-smoke` verifies configured scratch write/read access and reports GPU eligibility without touching GPU hardware.
+`train` requires an explicitly eligible Linux GPU runner and caller-selected corpus, state and checkpoint paths.

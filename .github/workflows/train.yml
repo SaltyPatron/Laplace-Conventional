@@ -5,29 +5,34 @@ on:
       data_root:
         description: Corpus root on the self-hosted runner
         required: true
-        default: /vault/Data
       state_dir:
         description: Generated state directory
         required: true
-        default: /opt/laplace/conventional/state
       output_dir:
         description: Checkpoint directory
         required: true
-        default: /opt/laplace/conventional/checkpoints
 
 jobs:
   train:
-    runs-on: [self-hosted, Linux, X64, laplace-conventional, gpu, pascal, 1080ti]
+    runs-on: [self-hosted, Linux, X64, laplace-conventional, laplace-gpu]
     timeout-minutes: 10080
+    concurrency:
+      group: conventional-gpu-training
+      cancel-in-progress: false
+    env:
+      DATA_ROOT: ${{ inputs.data_root }}
+      STATE_DIR: ${{ inputs.state_dir }}
+      OUTPUT_DIR: ${{ inputs.output_dir }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify GPU and corpus mount
+      - name: Require host GPU authorization before any hardware probe
         run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python3 -m laplace_conventional.host_policy --require
           nvidia-smi
-          test -d '${{ inputs.data_root }}'
+          test -d "$DATA_ROOT"
       - name: Install/update environment
         run: ./scripts/setup.sh
       - name: Inventory, select, prepare and plan every admitted lane
-        run: ./scripts/configure.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}'
+        run: ./scripts/configure.sh "$DATA_ROOT" "$STATE_DIR"
       - name: Train every admitted lane
-        run: ./scripts/train-all.sh '${{ inputs.data_root }}' '${{ inputs.state_dir }}' '${{ inputs.output_dir }}'
+        run: ./scripts/train-all.sh "$DATA_ROOT" "$STATE_DIR" "$OUTPUT_DIR"

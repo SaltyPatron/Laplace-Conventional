@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .train import TokenShardDataset
+from .host_policy import gpu_allowed
 
 
 def main() -> None:
@@ -22,7 +23,7 @@ def main() -> None:
 
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(args.model)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if gpu_allowed() and torch.cuda.is_available() else "cpu")
     model.to(device).eval()
     report = json.loads(Path(args.dataset_report).read_text(encoding="utf-8"))
     ds = TokenShardDataset(Path(args.data), "validation", args.context, report["dtype"])

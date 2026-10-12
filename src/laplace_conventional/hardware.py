@@ -5,6 +5,7 @@ import platform
 from pathlib import Path
 
 import psutil
+from .host_policy import gpu_allowed
 
 
 def probe() -> dict:
@@ -14,7 +15,10 @@ def probe() -> dict:
         "cpu_count": psutil.cpu_count(logical=True),
         "ram_bytes": psutil.virtual_memory().total,
         "cuda": False,
+        "gpu_allowed": gpu_allowed(),
     }
+    if not result["gpu_allowed"]:
+        return result
     try:
         import torch
         result["torch"] = torch.__version__

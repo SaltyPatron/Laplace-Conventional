@@ -7,38 +7,39 @@ RUNNER_USER=laplace-runner
 RUNNER_GROUP=laplace-runner
 RUNNER_VERSION=2.337.0
 RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
-RUNNER_ROOT=/var/lib/agents/laplace-runner/actions-runner-conventional
-WORK_ROOT=/build/laplace/work/conventional-runner
-SCRATCH_ROOT=/build/laplace/work/conventional-scratch
-RUNNER_NAME=hart-server-conventional
-LABELS=laplace-conventional,gpu,pascal,1080ti
-SERVICE=actions.runner.SaltyPatron-Laplace-Conventional.hart-server-conventional.service
+RUNNER_ROOT=${LAPLACE_CONVENTIONAL_RUNNER_ROOT:?Declare the runner installation directory}
+WORK_ROOT=${LAPLACE_CONVENTIONAL_RUNNER_WORK:?Declare the runner work directory}
+SCRATCH_ROOT=${LAPLACE_CONVENTIONAL_RUNNER_SCRATCH:?Declare the runner scratch directory}
+RUNNER_NAME=${LAPLACE_CONVENTIONAL_RUNNER_NAME:-$(hostname -s)-Laplace-Conventional}
+LABELS=laplace-conventional
+if [[ -n "${LAPLACE_GPU_HOST:-}" && "${LAPLACE_GPU_HOST,,}" == "$(hostname -s | tr '[:upper:]' '[:lower:]')" ]]; then
+  LABELS+=,laplace-gpu
+fi
+SERVICE=actions.runner.SaltyPatron-Laplace-Conventional.$RUNNER_NAME.service
 OPERATOR="${LAPLACE_OPERATOR:-${SUDO_USER:-}}"
 
 if [[ $EUID != 0 ]]; then
   exec sudo bash "$0" "$@"
 fi
-for command in curl tar sha256sum runuser systemctl python3 gh mountpoint; do
+for command in curl tar sha256sum runuser systemctl python3 gh; do
   command -v "$command" >/dev/null || { echo "Required command missing: $command" >&2; exit 2; }
 done
 [[ -n "$OPERATOR" && "$OPERATOR" != root ]] || {
   echo 'Run with sudo from the operator account so gh uses that account.' >&2; exit 2;
 }
-mountpoint -q /build || { echo '/build must be mounted' >&2; exit 2; }
-mountpoint -q /var/lib/agents || { echo '/var/lib/agents must be mounted' >&2; exit 2; }
 getent group "$RUNNER_GROUP" >/dev/null || groupadd --system "$RUNNER_GROUP"
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then
   useradd --system --gid "$RUNNER_GROUP" --home-dir /var/lib/agents/laplace-runner --create-home --shell /usr/sbin/nologin "$RUNNER_USER"
 fi
 usermod -aG "$RUNNER_GROUP" "$OPERATOR"
 [[ $(id -gn "$RUNNER_USER") == "$RUNNER_GROUP" ]] || { echo 'Runner primary group differs' >&2; exit 2; }
-for directory in /build/laplace /build/laplace/work "$RUNNER_ROOT" "$WORK_ROOT" "$SCRATCH_ROOT"; do
+for directory in "$RUNNER_ROOT" "$WORK_ROOT" "$SCRATCH_ROOT"; do
+  [[ "$directory" = /* && "$directory" != *[[:space:]]* && "$directory" != *'%'* ]] || { echo 'Runner paths must be absolute and contain no whitespace or systemd specifiers' >&2; exit 2; }
   [[ ! -L "$directory" ]] || { echo "Refusing symlink directory: $directory" >&2; exit 2; }
   install -d -g "$RUNNER_GROUP" -m 2770 "$directory"
 done
 export TMPDIR="$SCRATCH_ROOT" TMP="$SCRATCH_ROOT" TEMP="$SCRATCH_ROOT"
 runuser -u "$OPERATOR" -- gh repo view "$REPO" --json viewerPermission --jq .viewerPermission | grep -qx ADMIN
-nvidia-smi --query-gpu=name --format=csv,noheader | grep -q 'GTX 1080 Ti'
 
 # Fetch only the upstream distribution, never another runner's registration or credentials.
 archive="$SCRATCH_ROOT/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
@@ -79,7 +80,7 @@ fi
 install -d -m 0755 "/etc/systemd/system/$SERVICE.d"
 cat > "/etc/systemd/system/$SERVICE.d/50-laplace-storage.conf" <<UNIT
 [Unit]
-RequiresMountsFor=/build /var/lib/agents
+RequiresMountsFor=$RUNNER_ROOT $WORK_ROOT $SCRATCH_ROOT
 
 [Service]
 Group=$RUNNER_GROUP
@@ -87,13 +88,14 @@ UMask=0002
 Environment=TMPDIR=$SCRATCH_ROOT
 Environment=TMP=$SCRATCH_ROOT
 Environment=TEMP=$SCRATCH_ROOT
+Environment=LAPLACE_GPU_HOST=${LAPLACE_GPU_HOST:-}
 UNIT
 systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
 systemctl is-active --quiet "$SERVICE"
 for _attempt in {1..20}; do
-  status="$(runuser -u "$OPERATOR" -- gh api "repos/$REPO/actions/runners" --jq '.runners[] | select(.name == "hart-server-conventional") | .status')"
+  status="$(runuser -u "$OPERATOR" -- gh api "repos/$REPO/actions/runners" | python3 -c 'import json,sys; name=sys.argv[1]; print(next((r["status"] for r in json.load(sys.stdin)["runners"] if r["name"] == name), "missing"))' "$RUNNER_NAME")"
   if [[ "$status" == online ]]; then
     echo "ONLINE: $RUNNER_NAME, user=$RUNNER_USER group=$RUNNER_GROUP work=$WORK_ROOT scratch=$SCRATCH_ROOT"
     exit 0
