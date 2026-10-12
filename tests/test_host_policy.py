@@ -13,9 +13,11 @@ from laplace_conventional.runtime import accelerator_for_plan
 @pytest.mark.parametrize("declared", ["", "another-host", "*"])
 def test_ineligible_inventory_never_imports_gpu_runtime(declared):
     original = builtins.__import__
+    gpu_imports = []
 
     def guarded(name, *args, **kwargs):
         if name in {"torch", "accelerate", "deepspeed"}:
+            gpu_imports.append(name)
             raise AssertionError("Ineligible inventory reached a GPU runtime")
         return original(name, *args, **kwargs)
 
@@ -25,6 +27,7 @@ def test_ineligible_inventory_never_imports_gpu_runtime(declared):
         assert result["gpu_allowed"] is False
         assert result["cuda"] is False
         assert "gpu" not in result
+        assert not gpu_imports
         with pytest.raises(RuntimeError, match="before hardware access"):
             require_gpu_host()
 
