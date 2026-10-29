@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}"
-STATE="${1:-$ROOT/.state}"
-OUT="${2:-$ROOT/checkpoints}"
+source "$ROOT/scripts/paths.sh"
+STATE="${1:-$STATE_DEFAULT}"
+OUT="${2:-$OUTPUT_DEFAULT}"
 PROJECT_CONFIG="${3:-$ROOT/config/default.toml}"
 
 for required in "$STATE/training.json" "$STATE/execution.json" "$STATE/data/dataset-report.json" "$STATE/tokenizer/tokenizer.model"; do

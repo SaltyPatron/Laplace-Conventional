@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}"
+source "$ROOT/scripts/paths.sh"
 PYTHON="${PYTHON:-python3}"
 TORCH_VERSION="${TORCH_VERSION:-2.14.0}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"

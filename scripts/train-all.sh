@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/paths.sh"
 DATA_ROOT="${1:?usage: scripts/train-all.sh /path/to/corpus [state-dir] [output-dir] [project-config]}"
-STATE="${2:-$ROOT/.state}"
-OUT="${3:-$ROOT/checkpoints}"
+STATE="${2:-$STATE_DEFAULT}"
+OUT="${3:-$OUTPUT_DEFAULT}"
 PROJECT_CONFIG="${4:-$ROOT/config/default.toml}"
 mkdir -p "$OUT"
 
@@ -12,7 +13,7 @@ mkdir -p "$OUT"
 "$ROOT/scripts/train.sh" "$STATE" "$OUT/text" "$PROJECT_CONFIG"
 "$ROOT/scripts/train-modalities.sh" "$DATA_ROOT" "$STATE" "$OUT/modalities" "$PROJECT_CONFIG"
 
-python_bin="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}/bin/python"
+python_bin="$VENV/bin/python"
 "$python_bin" - "$STATE" "$OUT" <<'PY'
 import hashlib, json, sys
 from pathlib import Path

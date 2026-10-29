@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV="${LAPLACE_CONVENTIONAL_VENV:-$ROOT/.venv}"
+source "$ROOT/scripts/paths.sh"
 DATA_ROOT="${1:?usage: scripts/train-modalities.sh /path/to/corpus [state-dir] [output-dir] [project-config]}"
-STATE="${2:-$ROOT/.state}"
-OUT="${3:-$ROOT/checkpoints/modalities}"
+STATE="${2:-$STATE_DEFAULT}"
+OUT="${3:-$OUTPUT_DEFAULT/modalities}"
 PROJECT_CONFIG="${4:-$ROOT/config/default.toml}"
 AUTO_RESUME="${AUTO_RESUME:-1}"
 

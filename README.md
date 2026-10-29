@@ -16,9 +16,19 @@ The repository keeps the following boundaries independently inspectable:
 
 ```bash
 ./scripts/setup.sh
-./scripts/configure.sh /vault/Data .state config/default.toml
-./scripts/train-all.sh /vault/Data .state checkpoints config/default.toml
+./scripts/configure.sh /vault/Data
+./scripts/train-all.sh /vault/Data
 ```
+
+All scripts share `scripts/paths.sh`. The environment lives under
+`$LAPLACE_BUILD/Laplace-Conventional/venv`, generated state under
+`$LAPLACE_WORK/conventional`, and checkpoints under
+`$LAPLACE_MODELS/conventional/checkpoints`. Without workspace declarations they
+use the user's XDG cache, state and data directories. Override these with
+`LAPLACE_CONVENTIONAL_VENV`, `LAPLACE_CONVENTIONAL_STATE` and
+`LAPLACE_CONVENTIONAL_OUTPUT`; state/output command arguments still take precedence.
+These directories are independent of the source checkout. Existing `.venv`,
+`.state` and `checkpoints` directories can be selected explicitly for a prior run.
 
 `config/default.toml` is checked-in project policy: validation split, explicit training selection, record chunking, tokenizer candidates, text scaling-law ratio/context rule, optimizer settings, modality model definitions/objectives, media checkpoint cadence, shard size, full-coverage policy, and execution-memory policy are all visible there. Corpus-dependent text dimensions are generated from measurements rather than checked in as pretend `1080ti.json`/`scale.json` presets.
 
@@ -30,7 +40,8 @@ Setup defaults to CPU wheels on an ineligible host, and to the configured PyTorc
 
 ## Generated state
 
-Configuration is generated under `.state/` from the corpus and measured host:
+Configuration is generated under the selected state directory from the corpus and measured host
+(`.state/` below denotes that directory):
 
 - `.state/inventory/manifest.jsonl` — complete physical accounting
 - `.state/corpus/decisions.jsonl` — every training admission decision
