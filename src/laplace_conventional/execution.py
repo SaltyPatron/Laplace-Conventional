@@ -80,7 +80,7 @@ def derive_execution_plan(training_config: dict, hardware: dict, *, execution_po
     ram_budget = int(ram_total * ram_fraction)
 
     # Conservative full-training state estimate: weights/master copy, gradients,
-    # and Adam first/second moments. This is deliberately not a throughput claim.
+    # and Adam first/second moments.
     state_bytes_per_parameter = int(policy.get("native_state_bytes_per_parameter", 16))
     native_state = params * state_bytes_per_parameter
 
